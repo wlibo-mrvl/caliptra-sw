@@ -125,6 +125,15 @@ pub const APP_WITH_UART_OCP_LOCK: FwId = FwId {
     features: &["emu", "fips_self_test", "ocp-lock", "cfi"],
 };
 
+/// Test-only runtime with the ACVP_TEST mailbox command. Never ship this image.
+///
+/// Built without `ocp-lock`: the ACVP handlers do not fit the runtime ICCM next to the OCP LOCK code.
+pub const APP_WITH_UART_ACVP: FwId = FwId {
+    crate_name: "caliptra-runtime",
+    bin_name: "caliptra-runtime",
+    features: &["emu", "fips_self_test", "acvp", "cfi"],
+};
+
 pub const APP_WITH_UART_FIPS_TEST_HOOKS: FwId = FwId {
     crate_name: "caliptra-runtime",
     bin_name: "caliptra-runtime",
@@ -645,6 +654,7 @@ pub const REGISTERED_FW: &[&FwId] = &[
     &APP,
     &APP_WITH_UART,
     &APP_WITH_UART_OCP_LOCK,
+    &APP_WITH_UART_ACVP,
     &APP_WITH_UART_FIPS_TEST_HOOKS,
     &APP_WITH_UART_FIPS_TEST_HOOKS_FPGA,
     &APP_WITH_UART_OCP_LOCK_FPGA,

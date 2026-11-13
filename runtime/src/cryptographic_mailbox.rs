@@ -65,6 +65,9 @@ use caliptra_image_types::{
 use constant_time_eq::constant_time_eq;
 use zerocopy::{transmute, FromBytes, Immutable, IntoBytes, KnownLayout};
 
+#[cfg(feature = "acvp")]
+pub(crate) mod acvp_state;
+
 pub const GCM_MAX_KEY_USES: u64 = (1 << 32) - 1;
 pub const KEY_USAGE_MAX: usize = 256;
 pub const MLDSA_SEED_SIZE: usize = 32;

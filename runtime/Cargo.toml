@@ -67,6 +67,8 @@ ctr.workspace = true
 fips204.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
+hex.workspace = true
+serde_json.workspace = true
 ml-dsa.workspace = true
 ml-dsa-01.workspace = true
 openssl.workspace = true
@@ -91,6 +93,8 @@ slow_tests = []
 flash-boot = []
 verilator = ["caliptra-hw-model/verilator"]
 fips_self_test = []
+# Test-only ACVP command (CommandId::ACVP_TEST). Never enable in a production image.
+acvp = []
 cfi = [
     "caliptra-image-types/cfi",
     "caliptra-image-verify/cfi",

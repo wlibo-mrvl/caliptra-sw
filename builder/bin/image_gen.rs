@@ -42,6 +42,7 @@ fn main() {
                 .value_parser(value_parser!(PathBuf))
         )
         .arg(arg!(--"zeros" [bool] "Build an image bundle with zero'd FMC and RT. This will NMI immediately."))
+        .arg(arg!(--"acvp" "Use the test-only runtime with the ACVP_TEST mailbox command (never ship this image)"))
         .arg(arg!(--"owner-sig-override" [FILE] "Manually overwrite the owner_sigs of the FW bundle image with the contents of binary [FILE]. The signature should be an ECC signature concatenated with an LMS signature").value_parser(value_parser!(PathBuf)))
         .arg(arg!(--"vendor-sig-override" [FILE] "Manually overwrite the vendor_sigs of the FW bundle image with the contents of binary [FILE]. The signature should be an ECC signature concatenated with an LMS signature").value_parser(value_parser!(PathBuf)))
         .arg(
@@ -102,6 +103,8 @@ fn main() {
         // Get image types (zeros or actual firmware)
         let (fmc_type, app_type) = if args.contains_id("zeros") {
             (firmware::FMC_ZEROS, firmware::APP_ZEROS)
+        } else if args.get_flag("acvp") {
+            (firmware::FMC_WITH_UART, firmware::APP_WITH_UART_ACVP)
         } else {
             (firmware::FMC_WITH_UART, firmware::APP_WITH_UART_OCP_LOCK)
         };

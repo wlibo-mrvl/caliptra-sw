@@ -13,7 +13,16 @@ Abstract:
 --*/
 #![cfg_attr(not(feature = "fips_self_test"), allow(unused))]
 #![no_std]
+#[cfg(all(
+    feature = "acvp",
+    target_arch = "riscv32",
+    not(any(feature = "emu", feature = "fpga_subsystem"))
+))]
+compile_error!("the `acvp` feature exposes raw key material and signing; build it only with `emu` or `fpga_subsystem`");
+
 mod activate_firmware;
+#[cfg(feature = "acvp")]
+mod acvp;
 mod attested_csr;
 mod authorize_and_stash;
 mod capabilities;
@@ -452,6 +461,8 @@ fn execute_command(
             }
             _ => Err(CaliptraError::RUNTIME_SELF_TEST_NOT_STARTED),
         },
+        #[cfg(feature = "acvp")]
+        CommandId::ACVP_TEST => acvp::execute(drivers, cmd_bytes, resp),
         CommandId::SHUTDOWN => FipsShutdownCmd::execute(drivers),
         CommandId::SET_AUTH_MANIFEST => SetAuthManifestCmd::execute(drivers, cmd_bytes, false),
         CommandId::VERIFY_AUTH_MANIFEST => SetAuthManifestCmd::execute(drivers, cmd_bytes, true),

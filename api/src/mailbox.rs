@@ -14,6 +14,76 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// Maximum input data size for cryptographic mailbox commands.
 pub const MAX_CMB_DATA_SIZE: usize = 4096;
+
+/// Wire format of `CommandId::ACVP_TEST` (test builds only).
+///
+/// Request: `[chksum u32][target u32][n_fields u32]` followed by `n_fields` fields, each
+/// `[len u32][bytes, zero padded to a multiple of 4]`.
+///
+/// Response: `[chksum u32][fips_status u32][result u32][err_code u32][data_len u32][data]`.
+/// `result` is `ACVP_RESULT_OK`, `ACVP_RESULT_FALSE` (the operation completed and the
+/// answer is "no", e.g. a signature verification verdict) or `ACVP_RESULT_ERROR` (the
+/// operation failed; `err_code` holds the Caliptra error code).
+pub const ACVP_REQ_HDR_SIZE: usize = 12;
+pub const ACVP_RESP_HDR_SIZE: usize = 20;
+pub const ACVP_RESULT_OK: u32 = 0;
+pub const ACVP_RESULT_FALSE: u32 = 1;
+pub const ACVP_RESULT_ERROR: u32 = 2;
+
+/// Target ids for `CommandId::ACVP_TEST`. Mirrored in the tester framework
+/// (`Cptra_ACVP/TestData/acvp_targets.py`).
+pub const ACVP_TARGET_PING: u32 = 0x0000;
+// SHA-256 family. Fields: [msg] unless noted.
+pub const ACVP_TARGET_SHA256_DIGEST: u32 = 0x0100;
+/// Fields: [chunk_size u32][msg]. Streams `msg` through `digest_init`/`update`/`finalize`.
+pub const ACVP_TARGET_SHA256_DIGEST_INIT: u32 = 0x0101;
+/// `Sha256::digest_blocks_raw`; the message must be a multiple of 64 bytes and at most 8192.
+pub const ACVP_TARGET_SHA256_BLOCKS_RAW: u32 = 0x0102;
+/// Fields: [w u32][n_mode u32][msg]. `update_wntz` / `finalize_wntz`.
+pub const ACVP_TARGET_SHA256_WNTZ: u32 = 0x0103;
+// SHA-384 / SHA-512 (plain SHA-512 engine). Fields: [msg].
+pub const ACVP_TARGET_SHA384_DIGEST: u32 = 0x0110;
+pub const ACVP_TARGET_SHA512_DIGEST: u32 = 0x0111;
+// HMAC. Fields: [mode u32 (384 or 512)][key (48 or 64 bytes)][msg].
+pub const ACVP_TARGET_HMAC: u32 = 0x0200;
+/// Same fields as `ACVP_TARGET_HMAC`; runs `hmac_init`, `update`, `finalize`.
+pub const ACVP_TARGET_HMAC_INIT: u32 = 0x0201;
+// AES-256. Fields: [direction u32 (1 encrypt, 2 decrypt)][key 32][iv 16][data] for CBC,
+// [key 32][iv 16][data] for CTR.
+pub const ACVP_TARGET_AES_CBC: u32 = 0x0300;
+pub const ACVP_TARGET_AES_CTR: u32 = 0x0301;
+/// Fields: [key 32][msg]. `Aes::cmac`; returns the 16-byte MAC.
+pub const ACVP_TARGET_AES_CMAC: u32 = 0x0302;
+// KDFs (counter mode, one counter value per PRF block).
+/// Fields: [key 32][label][rounds u32 (1..=4)]. `cmac_kdf`; returns rounds * 16 bytes.
+pub const ACVP_TARGET_CMAC_KDF: u32 = 0x0400;
+/// Fields: [mode u32 (384 or 512)][key (48 or 64 bytes)][label]. `hmac_kdf`; returns one PRF block.
+pub const ACVP_TARGET_HMAC_KDF: u32 = 0x0401;
+// Signature verification. The answer is a verdict: result OK = valid, result FALSE = invalid.
+/// Fields: [public key 48][signature 1620][msg]. `Lms::verify_lms_signature` (LMS_SHA256_M24_H15).
+pub const ACVP_TARGET_LMS_VERIFY: u32 = 0x0500;
+/// Fields: [public key 2592][signature 4627][context 0..=255][message]. `Mldsa87::verify_var`. The
+/// engine's streaming mode builds M' = 0x00 || len(ctx) || ctx || message from the context registers,
+/// which the handler programs because the driver function has no context parameter.
+pub const ACVP_TARGET_MLDSA_VERIFY_VAR: u32 = 0x0510;
+/// Fields: [public key 2592][signature 4627][message 64]. `Mldsa87::verify`.
+pub const ACVP_TARGET_MLDSA_VERIFY_MSG: u32 = 0x0511;
+/// Fields: [public key 2592][signature 4627][mu 64]. `Mldsa87::verify_external_mu`.
+pub const ACVP_TARGET_MLDSA_VERIFY_MU: u32 = 0x0512;
+/// Fields: [qx 48][qy 48][r 48][s 48][msg]. `Crypto::ecdsa384_verify` (SHA-384, P-384).
+pub const ACVP_TARGET_ECDSA384_VERIFY: u32 = 0x0600;
+/// Fields: [variant u32 (0 = ecdsa384_sign, 1 = ecdsa384_sign_and_verify)][seed 48][msg]. Derives a
+/// key pair from the seed into a key-vault slot, signs, erases the slot; returns qx || qy || r || s.
+pub const ACVP_TARGET_ECDSA384_SIGN: u32 = 0x0601;
+/// Cryptographic-mailbox encrypt targets. Fields: [key 32][plaintext]. The key is installed as the
+/// KEK (cmk) or the context key (the rest), the private encrypt function is called, and the
+/// response data is iv(12) || ciphertext || tag(16). The IV is chosen by the device.
+/// Plaintext sizes: cmk 80, aes context 128, aes-gcm context 100, ecdh context 48, shake256 token 16.
+pub const ACVP_TARGET_CM_ENCRYPT_CMK: u32 = 0x0700;
+pub const ACVP_TARGET_CM_ENCRYPT_AES_CONTEXT: u32 = 0x0701;
+pub const ACVP_TARGET_CM_ENCRYPT_AES_GCM_CONTEXT: u32 = 0x0702;
+pub const ACVP_TARGET_CM_ENCRYPT_ECDH_CONTEXT: u32 = 0x0703;
+pub const ACVP_TARGET_CM_ENCRYPT_SHAKE256_CONTEXT: u32 = 0x0704;
 /// Mailbox size in bytes when subsystem mode is enabled.
 pub const SUBSYSTEM_MAILBOX_SIZE_LIMIT: usize = 16 * 1024;
 /// Mailbox size in bytes when passive mode is enabled.
@@ -239,6 +309,9 @@ impl CommandId {
     pub const CM_ECDH_GENERATE: Self = Self(0x434D_4547); // "CMEG"
     pub const CM_ECDH_FINISH: Self = Self(0x434D_4546); // "CMEF"
     pub const CM_HMAC: Self = Self(0x434D_484D); // "CMHM"
+    /// Test-only generic ACVP command. Handled only when the runtime is built with the
+    /// `acvp` feature; otherwise it is an unimplemented command.
+    pub const ACVP_TEST: Self = Self(0x4143_5654); // "ACVT"
     pub const CM_HMAC_KDF_COUNTER: Self = Self(0x434D_4B43); // "CMKC"
     pub const CM_HKDF_EXTRACT: Self = Self(0x434D_4B54); // "CMKT"
     pub const CM_HKDF_EXPAND: Self = Self(0x434D_4B50); // "CMKP"
