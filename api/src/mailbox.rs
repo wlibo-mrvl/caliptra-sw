@@ -87,6 +87,23 @@ pub const ACVP_TARGET_CM_ENCRYPT_AES_CONTEXT: u32 = 0x0701;
 pub const ACVP_TARGET_CM_ENCRYPT_AES_GCM_CONTEXT: u32 = 0x0702;
 pub const ACVP_TARGET_CM_ENCRYPT_ECDH_CONTEXT: u32 = 0x0703;
 pub const ACVP_TARGET_CM_ENCRYPT_SHAKE256_CONTEXT: u32 = 0x0704;
+/// Ports of ROM-only functions and one patched HPKE routine, built for the ACVP test image only
+/// (`runtime/src/acvp/ports.rs`); each is a copy with the key-vault / constant inputs replaced by request fields.
+/// Fields: [key 32][pt 80]. ROM `derive_stable_key` tail: TRNG IV, `Crypto::encrypt_cmk`; returns iv || ct || tag.
+pub const ACVP_TARGET_PORT_DERIVE_STABLE_KEY: u32 = 0x0800;
+/// Fields: [salt][z][fixed_info]. ROM `derive_hek`: HMAC-SHA-512 extract (key = salt, data = z), then `hmac_kdf`
+/// (label = fixed_info); returns 64 bytes.
+pub const ACVP_TARGET_PORT_DERIVE_HEK: u32 = 0x0801;
+/// Fields: [salt][z][fixed_info]. ROM `hkdf_stable_owner_root_key`: same two steps as derive_hek.
+pub const ACVP_TARGET_PORT_HKDF_STABLE_OWNER_ROOT_KEY: u32 = 0x0802;
+/// Fields: [salt][z][fixed_info]. HPKE P-384 `derive_key_pair` with the labels replaced by request data:
+/// HKDF-SHA-384 extract (salt, z) then expand (fixed_info) for 48 bytes; the ECDH key pair step is left out.
+pub const ACVP_TARGET_PORT_DERIVE_KEY_PAIR: u32 = 0x0803;
+/// Runtime `ecdsa_verify` = the CM_ECDSA_VERIFY handler. Fields: [qx 48][qy 48][r 48][s 48][message]. Stores
+/// (qx, qy) for the handler (an `acvp` build verifies against it instead of deriving a key from a CMK seed),
+/// builds the CM_ECDSA_VERIFY request and calls the real handler (it hashes the message with SHA-384 and
+/// verifies). Result OK = valid, FALSE = invalid.
+pub const ACVP_TARGET_CM_ECDSA_VERIFY: u32 = 0x0804;
 /// Mailbox size in bytes when subsystem mode is enabled.
 pub const SUBSYSTEM_MAILBOX_SIZE_LIMIT: usize = 16 * 1024;
 /// Mailbox size in bytes when passive mode is enabled.

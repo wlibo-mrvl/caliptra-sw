@@ -25,6 +25,7 @@ mod cm;
 mod ecdsa;
 mod hmac;
 mod kdf;
+mod ports;
 mod pqc;
 mod sha;
 
@@ -157,6 +158,12 @@ fn dispatch(
         | ACVP_TARGET_CM_ENCRYPT_AES_GCM_CONTEXT
         | ACVP_TARGET_CM_ENCRYPT_ECDH_CONTEXT
         | ACVP_TARGET_CM_ENCRYPT_SHAKE256_CONTEXT => cm::encrypt(drivers, target, fields, out),
+        ACVP_TARGET_PORT_DERIVE_STABLE_KEY => ports::derive_stable_key(drivers, fields, out),
+        ACVP_TARGET_PORT_DERIVE_HEK | ACVP_TARGET_PORT_HKDF_STABLE_OWNER_ROOT_KEY => {
+            ports::twostep_sha512(drivers, target, fields, out)
+        }
+        ACVP_TARGET_PORT_DERIVE_KEY_PAIR => ports::derive_key_pair(drivers, fields, out),
+        ACVP_TARGET_CM_ECDSA_VERIFY => cm::ecdsa_verify(drivers, fields),
         _ => Err(CaliptraError::RUNTIME_UNIMPLEMENTED_COMMAND),
     }
 }

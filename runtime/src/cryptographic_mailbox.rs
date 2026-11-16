@@ -97,6 +97,10 @@ pub struct CmStorage {
     context_next_iv: u128,
     // key for encrypting contexts
     context_key: (LEArray4x8, LEArray4x8),
+    // [ACVP patch] public key for the next CM_ECDSA_VERIFY, set by the ACVP_TEST target instead of
+    // being derived from the CMK seed.
+    #[cfg(feature = "acvp")]
+    acvp_pub_key: Option<Ecc384PubKey>,
 }
 
 impl CmStorage {
@@ -1971,11 +1975,22 @@ impl Commands {
 
         let resp = mutrefbytes::<CmHmacKdfCounterResp>(resp)?;
         resp.hdr = MailboxRespHeader::default();
-        resp.kout = transmute!(drivers.cryptographic_mailbox.encrypt_cmk(
-            &mut drivers.aes,
-            &mut drivers.trng,
-            &unencrypted_cmk,
-        )?);
+        // [ACVP patch] In an `acvp` build the derived key is returned in plaintext (first `key_size`
+        // bytes of `kout`, rest zero) instead of being sealed into a CMK, so the KDF output can be
+        // checked against the lab's vectors. Production builds seal it as below.
+        #[cfg(feature = "acvp")]
+        {
+            resp.kout = MailboxCmk([0u8; CMK_SIZE_BYTES]);
+            resp.kout.0[..key_size].copy_from_slice(&unencrypted_cmk.key_material[..key_size]);
+        }
+        #[cfg(not(feature = "acvp"))]
+        {
+            resp.kout = transmute!(drivers.cryptographic_mailbox.encrypt_cmk(
+                &mut drivers.aes,
+                &mut drivers.trng,
+                &unencrypted_cmk,
+            )?);
+        }
         Ok(core::mem::size_of::<CmHmacKdfCounterResp>())
     }
 
@@ -2377,8 +2392,15 @@ impl Commands {
         let msg = &cmd.message[..cmd.message_size as usize];
         let hash = drivers.sha2_512_384.sha384_digest(msg)?;
 
-        let seed = Self::decrypt_ecdsa_seed(drivers, &cmd.cmk)?;
+        // [ACVP patch] An `acvp` build verifies against the public key the ACVP_TEST target stored
+        // (the lab's qx, qy) instead of re-deriving it from the CMK seed.
+        #[cfg(feature = "acvp")]
+        let pub_key = &drivers.cryptographic_mailbox.acvp_take_pub_key()?;
+        #[cfg(not(feature = "acvp"))]
         let mut priv_key: Array4x12 = Array4x12::default();
+        #[cfg(not(feature = "acvp"))]
+        let seed = Self::decrypt_ecdsa_seed(drivers, &cmd.cmk)?;
+        #[cfg(not(feature = "acvp"))]
         let pub_key = &drivers.ecc384.key_pair(
             Ecc384Seed::Array4x12(&seed),
             &Array4x12::default(),

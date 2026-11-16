@@ -6,8 +6,11 @@ use super::{invalid, read_array, Fields, Outcome};
 use crate::cryptographic_mailbox::acvp_state::Kind;
 use crate::Drivers;
 use caliptra_api::mailbox::*;
-use caliptra_drivers::LEArray4x8;
+use crate::cryptographic_mailbox::Commands;
+use caliptra_drivers::{Array4x12, Ecc384PubKey, LEArray4x8};
+use caliptra_error::CaliptraError;
 use caliptra_error::CaliptraResult;
+use zerocopy::IntoBytes;
 use zerocopy::transmute;
 
 /// Fields: [key 32][plaintext]. Response data: iv || ciphertext || tag.
@@ -44,4 +47,39 @@ pub(crate) fn encrypt(
         out,
     )?;
     Ok(Outcome::Data(n))
+}
+
+/// Runtime `ecdsa_verify`: runs the real CM_ECDSA_VERIFY handler. The handler (an `acvp` build) verifies
+/// against the public key stored here instead of one derived from a CMK seed.
+/// Fields: [qx 48][qy 48][r 48][s 48][message].
+pub(crate) fn ecdsa_verify(drivers: &mut Drivers, fields: &mut Fields) -> CaliptraResult<Outcome> {
+    let qx: [u8; 48] = read_array(fields.next()?)?;
+    let qy: [u8; 48] = read_array(fields.next()?)?;
+    let r: [u8; 48] = read_array(fields.next()?)?;
+    let s: [u8; 48] = read_array(fields.next()?)?;
+    let msg = fields.next()?;
+
+    let mut req = CmEcdsaVerifyReq::default();
+    if msg.len() > req.message.len() {
+        return Err(invalid());
+    }
+    req.signature_r = r;
+    req.signature_s = s;
+    req.message_size = msg.len() as u32;
+    for (d, b) in req.message.iter_mut().zip(msg.iter()) {
+        // SAFETY: `b` is a reference into the request field; a byte read is always aligned.
+        *d = unsafe { core::ptr::read_volatile(b) };
+    }
+    drivers.cryptographic_mailbox.acvp_set_pub_key(Ecc384PubKey {
+        x: Array4x12::from(qx),
+        y: Array4x12::from(qy),
+    });
+    let mut resp = [0u8; 8];
+    match Commands::ecdsa_verify(drivers, req.as_bytes_partial()?, &mut resp) {
+        Ok(_) => Ok(Outcome::Data(0)),
+        // The handler's verdict for a signature that does not verify.
+        Err(e) if e == CaliptraError::RUNTIME_MAILBOX_SIGNATURE_MISMATCH => Ok(Outcome::False),
+        // A public key that is not on the curve (or other bad operands) is an invalid signature.
+        Err(_) => Ok(Outcome::False),
+    }
 }

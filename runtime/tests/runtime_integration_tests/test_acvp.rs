@@ -673,6 +673,106 @@ fn test_acvp_cm_ecdsa_chain_matches_tester_framework() {
     call(&mut model, CommandId::CM_DELETE, cmk);
 }
 
+/// The ported ROM / HPKE functions: two-step SHA-512 KDF (derive_hek, hkdf_stable_owner_root_key),
+/// HKDF-SHA-384 (derive_key_pair) and the ROM derive_stable_key tail (TRNG IV, encrypt_cmk).
+#[test]
+fn test_acvp_ported_rom_functions() {
+    let mut model = acvp_model();
+
+    // Two-step KDF: PRK = HMAC-SHA-512(salt, z); okm = HMAC-SHA-512(PRK, BE32(1) || label).
+    for target in [ACVP_TARGET_PORT_DERIVE_HEK, ACVP_TARGET_PORT_HKDF_STABLE_OWNER_ROOT_KEY] {
+        for (salt_len, z_len, info_len) in [(128usize, 32usize, 96usize), (64, 32, 1), (20, 7, 1500)] {
+            let mut salt = data(salt_len.min(64), 5);
+            salt.resize(salt_len, 0); // a longer salt is zero beyond 64 bytes
+            let z = data(z_len, 6);
+            let info = data(info_len, 7);
+            let got = ok(acvp_call(&mut model, target, &[&salt, &z, &info]));
+            let mut key = salt.clone();
+            key.truncate(64);
+            let mut m = <Hmac<Sha512> as Mac>::new_from_slice(&key).unwrap();
+            m.update(&z);
+            let prk = m.finalize().into_bytes();
+            let mut m = <Hmac<Sha512> as Mac>::new_from_slice(&prk).unwrap();
+            m.update(&1u32.to_be_bytes());
+            m.update(&info);
+            assert_eq!(got, m.finalize().into_bytes().to_vec(), "target 0x{target:x} {salt_len}/{z_len}/{info_len}");
+        }
+        // A non-zero byte beyond the 64 the driver takes is not representable: malformed request.
+        let mut salt = data(128, 5);
+        salt[100] = 1;
+        let req = build_req(target, &[&salt, &data(32, 6), &data(8, 7)]);
+        assert!(model.mailbox_execute(u32::from(CommandId::ACVP_TEST), &req).is_err());
+    }
+
+    // HKDF-SHA-384 (RFC 5869): PRK = HMAC(salt, z); okm = HMAC(PRK, info || 0x01).
+    for (salt_len, z_len, info_len) in [(128usize, 1024usize, 32usize), (128, 62, 94), (48, 28, 1568)] {
+        let mut salt = data(salt_len.min(48), 8);
+        salt.resize(salt_len, 0);
+        let z = data(z_len, 9);
+        let info = data(info_len, 10);
+        let got = ok(acvp_call(&mut model, ACVP_TARGET_PORT_DERIVE_KEY_PAIR, &[&salt, &z, &info]));
+        let mut key = salt.clone();
+        key.truncate(48);
+        let mut m = <Hmac<Sha384> as Mac>::new_from_slice(&key).unwrap();
+        m.update(&z);
+        let prk = m.finalize().into_bytes();
+        let mut m = <Hmac<Sha384> as Mac>::new_from_slice(&prk).unwrap();
+        m.update(&info);
+        m.update(&[1u8]);
+        assert_eq!(got, m.finalize().into_bytes().to_vec(), "derive_key_pair {salt_len}/{z_len}/{info_len}");
+    }
+
+    // derive_stable_key tail: the answer is iv || ct || tag under the vector key, IV from the TRNG.
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    let key = data(32, 0x61);
+    let mut pt = data(80, 0x62);
+    pt[0] = 1; // a CMK is {version u16, length u16, key_usage u8, id[3], usage_counter u64, key[64]}
+    pt[1] = 0;
+    let out = ok(acvp_call(&mut model, ACVP_TARGET_PORT_DERIVE_STABLE_KEY, &[&key, &pt]));
+    assert_eq!(out.len(), 12 + 80 + 16);
+    let got = Aes256Gcm::new_from_slice(&key)
+        .unwrap()
+        .decrypt(Nonce::from_slice(&out[..12]), &out[12..])
+        .expect("tag verifies under the vector key");
+    assert_eq!(got, pt);
+    let again = ok(acvp_call(&mut model, ACVP_TARGET_PORT_DERIVE_STABLE_KEY, &[&key, &pt]));
+    assert_ne!(&again[..12], &out[..12], "the TRNG IV differs between calls");
+}
+
+/// `ecdsa_verify` = the CM_ECDSA_VERIFY handler, verifying against the public key from the request.
+#[test]
+fn test_acvp_cm_ecdsa_verify_with_request_key() {
+    use p384::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
+    let mut model = acvp_model();
+    let key = SigningKey::from_slice(&data(48, 0x41)).unwrap();
+    let point = key.verifying_key().to_encoded_point(false);
+    let (qx, qy) = (point.x().unwrap().to_vec(), point.y().unwrap().to_vec());
+    for len in [1usize, 128, 4096] {
+        let msg = data(len, 0x77);
+        let sig: Signature = key.sign_prehash(&Sha384::digest(&msg)).unwrap();
+        let (r, s) = (sig.r().to_bytes().to_vec(), sig.s().to_bytes().to_vec());
+        let call = |model: &mut DefaultHwModel, qx: &[u8], r: &[u8], msg: &[u8]| {
+            acvp_call(model, ACVP_TARGET_CM_ECDSA_VERIFY, &[qx, &qy, r, &s, msg]).result
+        };
+        assert_eq!(call(&mut model, &qx, &r, &msg), ACVP_RESULT_OK, "valid, {len} B");
+        let mut bad = msg.clone();
+        bad[0] ^= 1;
+        assert_eq!(call(&mut model, &qx, &r, &bad), ACVP_RESULT_FALSE);
+        let mut bad_r = r.clone();
+        bad_r[7] ^= 1;
+        assert_eq!(call(&mut model, &qx, &bad_r, &msg), ACVP_RESULT_FALSE);
+        let other = SigningKey::from_slice(&data(48, 0x42)).unwrap();
+        let op = other.verifying_key().to_encoded_point(false);
+        let wrong = acvp_call(
+            &mut model,
+            ACVP_TARGET_CM_ECDSA_VERIFY,
+            &[op.x().unwrap(), op.y().unwrap(), &r, &s, &msg],
+        );
+        assert_eq!(wrong.result, ACVP_RESULT_FALSE, "a different key rejects it");
+    }
+}
+
 #[test]
 fn test_acvp_cm_encrypt_targets() {
     use aes_gcm::aead::{Aead, KeyInit};
@@ -737,6 +837,15 @@ fn test_acvp_replay_framework_requests() {
     folders.sort();
     for dir in folders {
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        // CM_* command chains (MBX / RT+PATCH folders) have no ACVP_TEST request files; they are
+        // replayed from the generated script by test_acvp_replay_generated_chain_script.
+        let has_requests = std::fs::read_dir(&dir)
+            .unwrap()
+            .any(|e| e.unwrap().file_name().to_string_lossy().ends_with("_req.bin"));
+        if !has_requests {
+            println!("skip (command chain): {name}");
+            continue;
+        }
         // The emulator does not model update_wntz like the RTL, so only the framing is checked
         // for these folders (the command must succeed and return 32 bytes), not the digest.
         let framing_only = name.contains("update_wntz");
@@ -785,6 +894,14 @@ fn test_acvp_replay_framework_requests() {
                 let err = u32::from_le_bytes(resp[12..16].try_into().unwrap());
                 let data = &resp[ACVP_RESP_HDR_SIZE..];
                 let obj = test.as_object().unwrap();
+                // KDA VAL tests: the device derives the key (result OK), the tester compares it with the
+                // supplied dkm; the grader checks that, so only the size is checked here.
+                if name.contains("KDA-") && obj.contains_key("testPassed") {
+                    assert_eq!(result, ACVP_RESULT_OK, "{name} TC_{tc}: error 0x{err:08x}");
+                    assert!(data.len() >= 48, "{name} TC_{tc}: dkm size");
+                    checked += 1;
+                    continue;
+                }
                 // Verification folders: the answer is the verdict.
                 if let Some(want) = obj.get("testPassed") {
                     assert!(
@@ -868,6 +985,7 @@ fn test_acvp_replay_generated_chain_script() {
             "CM_AES_GCM_DECRYPT_UPDATE" => CommandId::CM_AES_GCM_DECRYPT_UPDATE,
             "CM_AES_GCM_DECRYPT_FINAL" => CommandId::CM_AES_GCM_DECRYPT_FINAL,
             "CM_AES_GCM_DECRYPT_DMA" => CommandId::CM_AES_GCM_DECRYPT_DMA,
+            "CM_HMAC_KDF_COUNTER" => CommandId::CM_HMAC_KDF_COUNTER,
             other => panic!("unknown command {other}"),
         })
     };

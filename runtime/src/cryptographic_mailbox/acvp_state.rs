@@ -91,3 +91,17 @@ fn pack(out: &mut [u8], iv: &[u8], ct: &[u8], tag: &[u8]) -> CaliptraResult<usiz
     d_tag.copy_from_slice(tag);
     Ok(total)
 }
+
+impl CmStorage {
+    /// Stores the public key the next `CM_ECDSA_VERIFY` verifies against.
+    pub(crate) fn acvp_set_pub_key(&mut self, key: Ecc384PubKey) {
+        self.acvp_pub_key = Some(key);
+    }
+
+    /// Takes the stored public key (one use per `acvp_set_pub_key`).
+    pub(crate) fn acvp_take_pub_key(&mut self) -> CaliptraResult<Ecc384PubKey> {
+        self.acvp_pub_key
+            .take()
+            .ok_or(CaliptraError::RUNTIME_MAILBOX_INVALID_PARAMS)
+    }
+}
