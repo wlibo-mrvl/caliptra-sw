@@ -44,6 +44,9 @@ pub const ACVP_TARGET_SHA256_WNTZ: u32 = 0x0103;
 // SHA-384 / SHA-512 (plain SHA-512 engine). Fields: [msg].
 pub const ACVP_TARGET_SHA384_DIGEST: u32 = 0x0110;
 pub const ACVP_TARGET_SHA512_DIGEST: u32 = 0x0111;
+/// Fields: [axi_addr_lo u32][axi_addr_hi u32][len u32]. Hashes `len` bytes at the AXI address with
+/// `DmaRecovery::sha384_image` (the DMA streams the bytes into the SHA accelerator); returns 48 bytes.
+pub const ACVP_TARGET_SHA384_IMAGE: u32 = 0x0112;
 // HMAC. Fields: [mode u32 (384 or 512)][key (48 or 64 bytes)][msg].
 pub const ACVP_TARGET_HMAC: u32 = 0x0200;
 /// Same fields as `ACVP_TARGET_HMAC`; runs `hmac_init`, `update`, `finalize`.
@@ -72,7 +75,7 @@ pub const ACVP_TARGET_MLDSA_VERIFY_MSG: u32 = 0x0511;
 pub const ACVP_TARGET_MLDSA_VERIFY_MU: u32 = 0x0512;
 /// Fields: [qx 48][qy 48][r 48][s 48][msg]. `Crypto::ecdsa384_verify` (SHA-384, P-384).
 pub const ACVP_TARGET_ECDSA384_VERIFY: u32 = 0x0600;
-/// Fields: [variant u32 (0 = ecdsa384_sign, 1 = ecdsa384_sign_and_verify)][seed 48][msg]. Derives a
+/// Fields: [variant u32 (0 = ecdsa384_sign, 1 = ecdsa384_sign_and_verify, 2 = DPE sign_ec)][seed 48][msg]. Derives a
 /// key pair from the seed into a key-vault slot, signs, erases the slot; returns qx || qy || r || s.
 pub const ACVP_TARGET_ECDSA384_SIGN: u32 = 0x0601;
 /// Cryptographic-mailbox encrypt targets. Fields: [key 32][plaintext]. The key is installed as the

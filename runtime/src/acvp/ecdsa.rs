@@ -3,14 +3,19 @@
 //! ECDSA P-384 / SHA-384 targets using the ROM/FMC helpers in `caliptra_common::crypto`.
 
 use super::{emit, invalid, read_array, Fields, Outcome};
+use crate::dpe_crypto::DpeCrypto;
 use crate::Drivers;
+use caliptra_dpe_crypto::{
+    ecdsa::{curve_384::EcdsaPub384, EcdsaPubKey, EcdsaSig, EcdsaSignature},
+    PubKey, SignData, Signature,
+};
 use caliptra_common::crypto::Crypto;
 use caliptra_common::keyids::KEY_ID_TMP;
 use caliptra_drivers::{
     Array4x12, Ecc384PrivKeyOut, Ecc384PubKey, Ecc384Result, Ecc384Seed, Ecc384Signature, KeyUsage,
     KeyWriteArgs,
 };
-use caliptra_error::CaliptraResult;
+use caliptra_error::{CaliptraError, CaliptraResult};
 
 fn scalar(bytes: &[u8]) -> CaliptraResult<Array4x12> {
     Ok(Array4x12::from(read_array::<48>(bytes)?))
@@ -49,6 +54,34 @@ pub(crate) fn ecdsa384_verify(
     }
 }
 
+/// Runs `DpeCrypto::sign_ec` with the temporary key-vault key.
+fn dpe_sign_ec(
+    drivers: &mut Drivers,
+    pub_key: &Ecc384PubKey,
+    msg: &[u8],
+) -> CaliptraResult<Ecc384Signature> {
+    let dpe_pub = PubKey::Ecdsa(EcdsaPubKey::Ecdsa384(EcdsaPub384 {
+        x: <[u8; 48]>::from(&pub_key.x),
+        y: <[u8; 48]>::from(&pub_key.y),
+    }));
+    let sig = DpeCrypto::sign_ec(
+        &mut drivers.ecc384,
+        &mut drivers.sha2_512_384,
+        &mut drivers.trng,
+        &SignData::Raw(msg),
+        &KEY_ID_TMP,
+        &dpe_pub,
+    )
+    .map_err(|_| CaliptraError::RUNTIME_INTERNAL)?;
+    let Signature::Ecdsa(EcdsaSignature::Ecdsa384(EcdsaSig { r, s })) = sig else {
+        return Err(CaliptraError::RUNTIME_INTERNAL);
+    };
+    Ok(Ecc384Signature {
+        r: Array4x12::from(r),
+        s: Array4x12::from(s),
+    })
+}
+
 /// Derives a key pair from a seed into a key-vault slot, signs `msg`, erases the slot, and
 /// returns qx || qy || r || s.
 pub(crate) fn ecdsa384_sign(
@@ -59,7 +92,7 @@ pub(crate) fn ecdsa384_sign(
     let variant = fields.next_u32()?;
     let seed = scalar(fields.next()?)?;
     let msg = fields.next()?;
-    if variant > 1 {
+    if variant > 2 {
         return Err(invalid());
     }
 
@@ -72,7 +105,10 @@ pub(crate) fn ecdsa384_sign(
             KeyUsage::default().set_ecc_private_key_en(),
         )),
     )?;
-    let signed = if variant == 0 {
+    let signed = if variant == 2 {
+        // DPE signing helper (runtime/src/dpe_crypto.rs), raw message hashed with SHA-384.
+        dpe_sign_ec(drivers, &pub_key, msg)
+    } else if variant == 0 {
         Crypto::ecdsa384_sign(
             &mut drivers.sha2_512_384,
             &mut drivers.ecc384,

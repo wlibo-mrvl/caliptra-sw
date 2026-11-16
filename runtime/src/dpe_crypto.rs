@@ -220,7 +220,7 @@ impl DpeCrypto<'_> {
     }
 
     #[inline(never)]
-    fn sign_ec(
+    pub(crate) fn sign_ec(
         ecc384: &mut Ecc384,
         sha2_512_384: &mut Sha2_512_384,
         trng: &mut Trng,

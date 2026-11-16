@@ -165,6 +165,26 @@ fn test_acvp_sha256_family() {
     }
 }
 
+/// `sha384_image` reads the message over AXI, which only the FPGA bench stages (the software
+/// emulator has no host memory), so the emulator checks the zero-length case (answered without
+/// touching the bus) and the request framing.
+#[test]
+fn test_acvp_sha384_image_zero_length() {
+    let mut model = acvp_model();
+    let words = [0u32.to_le_bytes(), 0u32.to_le_bytes(), 0u32.to_le_bytes()];
+    let out = ok(acvp_call(
+        &mut model,
+        ACVP_TARGET_SHA384_IMAGE,
+        &[&words[0], &words[1], &words[2]],
+    ));
+    assert_eq!(out, Sha384::digest([]).to_vec());
+    // A request with a missing field is malformed.
+    let req = build_req(ACVP_TARGET_SHA384_IMAGE, &[&words[0]]);
+    assert!(model
+        .mailbox_execute(u32::from(CommandId::ACVP_TEST), &req)
+        .is_err());
+}
+
 #[test]
 fn test_acvp_sha384_sha512() {
     let mut model = acvp_model();
@@ -560,7 +580,7 @@ fn test_acvp_ecdsa_verify_and_sign() {
     }
 
     // Signing: the device derives a key pair from the seed, signs, and returns qx qy r s.
-    for variant in [0u32, 1] {
+    for variant in [0u32, 1, 2] {
         for len in [1usize, 128, 1000] {
             let seed = data(48, 77);
             let msg = data(len, 12);
@@ -580,7 +600,14 @@ fn test_acvp_ecdsa_verify_and_sign() {
             .unwrap();
             vk.verify_prehash(&Sha384::digest(&msg), &sig)
                 .expect("device signature verifies");
-            // The same seed gives the same key pair.
+            // The same seed and message give the same key pair and the same signature
+            // (deterministic ECDSA: the engine derives the nonce from the key and the digest).
+            let same = ok(acvp_call(
+                &mut model,
+                ACVP_TARGET_ECDSA384_SIGN,
+                &[&variant.to_le_bytes(), &seed, &msg],
+            ));
+            assert_eq!(same, got, "variant {variant}: signing is deterministic");
             let again = ok(acvp_call(
                 &mut model,
                 ACVP_TARGET_ECDSA384_SIGN,
@@ -593,6 +620,57 @@ fn test_acvp_ecdsa_verify_and_sign() {
             );
         }
     }
+}
+
+/// The tester's CM_ECDSA_SIGN chain for the MBX `ecdsa_sign` folder, built the way
+/// acvp_chains.py builds it (raw request bytes, variable-length CM_IMPORT): the returned x, y, r, s
+/// are big-endian and the signature verifies, and signing is deterministic.
+#[test]
+fn test_acvp_cm_ecdsa_chain_matches_tester_framework() {
+    use p384::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+    let mut model = acvp_model();
+    let call = |model: &mut DefaultHwModel, cmd: CommandId, payload: Vec<u8>| -> Vec<u8> {
+        let mut req = vec![0u8; 4];
+        req.extend_from_slice(&payload);
+        let id = u32::from(cmd);
+        let chk = calc_checksum(id, &req[4..]);
+        req[..4].copy_from_slice(&chk.to_le_bytes());
+        model
+            .mailbox_execute(id, &req)
+            .unwrap()
+            .expect("response")
+    };
+    let seed = data(48, 3);
+    let mut imp = Vec::new();
+    imp.extend_from_slice(&3u32.to_le_bytes()); // CmKeyUsage::Ecdsa
+    imp.extend_from_slice(&48u32.to_le_bytes());
+    imp.extend_from_slice(&seed);
+    let import_resp = call(&mut model, CommandId::CM_IMPORT, imp);
+    assert_eq!(import_resp.len(), 136);
+    let cmk = import_resp[8..136].to_vec();
+
+    let pub_resp = call(&mut model, CommandId::CM_ECDSA_PUBLIC_KEY, cmk.clone());
+    assert_eq!(pub_resp.len(), 104);
+    let mut sec1 = vec![0x04u8];
+    sec1.extend_from_slice(&pub_resp[8..104]);
+    let vk = VerifyingKey::from_sec1_bytes(&sec1).expect("big-endian x || y is a valid point");
+
+    let msg = data(128, 9);
+    let mut sign_req = cmk.clone();
+    sign_req.extend_from_slice(&(msg.len() as u32).to_le_bytes());
+    sign_req.extend_from_slice(&msg);
+    let sign_resp = call(&mut model, CommandId::CM_ECDSA_SIGN, sign_req.clone());
+    assert_eq!(sign_resp.len(), 104);
+    let sig = Signature::from_scalars(
+        <[u8; 48]>::try_from(&sign_resp[8..56]).unwrap(),
+        <[u8; 48]>::try_from(&sign_resp[56..104]).unwrap(),
+    )
+    .unwrap();
+    vk.verify_prehash(&Sha384::digest(&msg), &sig)
+        .expect("CM_ECDSA_SIGN signature verifies under CM_ECDSA_PUBLIC_KEY");
+    let again = call(&mut model, CommandId::CM_ECDSA_SIGN, sign_req);
+    assert_eq!(again[8..], sign_resp[8..], "deterministic ECDSA");
+    call(&mut model, CommandId::CM_DELETE, cmk);
 }
 
 #[test]
@@ -664,6 +742,12 @@ fn test_acvp_replay_framework_requests() {
         let framing_only = name.contains("update_wntz");
         // The emulator panics (unwrap) when the external-mu path gets a signature that does not
         // decode; the RTL just reports it invalid. test_acvp_mldsa_verify covers that path.
+        // The software emulator has no host memory for the DMA to read; FPGA only.
+        // The emulator has no host memory: its DMA model panics on the staged AXI address.
+        if name.contains("sha384_image") {
+            println!("skip (needs host memory): {name}");
+            continue;
+        }
         if name.contains("ML_DSA_87_SIGVER_verify_internal") {
             println!("skip (emulator limitation): {name}");
             continue;

@@ -4,7 +4,7 @@
 
 use super::{emit, invalid, Fields, Outcome};
 use crate::Drivers;
-use caliptra_drivers::{Sha256Alg, Sha256DigestOp};
+use caliptra_drivers::{AesDmaMode, AxiAddr, DmaRecovery, Sha256Alg, Sha256DigestOp};
 use caliptra_error::CaliptraResult;
 
 const SHA256_BLOCK_BYTES: usize = 64;
@@ -103,4 +103,29 @@ pub(crate) fn sha512_digest(
     let msg = fields.next()?;
     let digest = drivers.sha2_512_384.sha512_digest(msg)?;
     emit(out, &<[u8; 64]>::from(digest))
+}
+
+/// SHA-384 of memory on the AXI bus (the ROM / Runtime image-hash path): the DMA engine reads
+/// `len` bytes at `hi:lo` and feeds them to the SHA accelerator. Fields: [lo u32][hi u32][len u32].
+pub(crate) fn sha384_image(
+    drivers: &mut Drivers,
+    fields: &mut Fields,
+    out: &mut [u8],
+) -> CaliptraResult<Outcome> {
+    let lo = fields.next_u32()?;
+    let hi = fields.next_u32()?;
+    let len = fields.next_u32()?;
+    let dma_image = DmaRecovery::new(
+        drivers.soc_ifc.recovery_interface_base_addr().into(),
+        drivers.soc_ifc.caliptra_base_axi_addr().into(),
+        drivers.soc_ifc.mci_base_addr().into(),
+        &drivers.dma,
+    );
+    let digest = dma_image.sha384_image(
+        &mut drivers.sha2_512_384_acc,
+        AxiAddr { hi, lo },
+        len,
+        AesDmaMode::None,
+    )?;
+    emit(out, &<[u8; 48]>::from(digest))
 }

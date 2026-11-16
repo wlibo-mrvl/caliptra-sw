@@ -138,6 +138,7 @@ fn dispatch(
         ACVP_TARGET_SHA256_WNTZ => sha::sha256_wntz(drivers, fields, out),
         ACVP_TARGET_SHA384_DIGEST => sha::sha384_digest(drivers, fields, out),
         ACVP_TARGET_SHA512_DIGEST => sha::sha512_digest(drivers, fields, out),
+        ACVP_TARGET_SHA384_IMAGE => sha::sha384_image(drivers, fields, out),
         ACVP_TARGET_HMAC => hmac::hmac(drivers, fields, out),
         ACVP_TARGET_HMAC_INIT => hmac::hmac_init(drivers, fields, out),
         ACVP_TARGET_AES_CBC => aes::aes_cbc(drivers, fields, out),
