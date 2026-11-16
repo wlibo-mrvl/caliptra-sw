@@ -38,6 +38,9 @@ use memoffset::offset_of;
 use zerocopy::{FromBytes, IntoBytes};
 use zeroize::Zeroize;
 
+#[cfg(feature = "acvp")]
+pub(crate) mod acvp_state;
+
 pub struct SetAuthManifestCmd;
 impl SetAuthManifestCmd {
     fn sha384_digest(
@@ -105,34 +108,43 @@ impl SetAuthManifestCmd {
         sha256: &mut Sha256,
         mldsa: &mut Mldsa87<'_>,
         pqc_key_type: FwVerificationPqcKeyType,
+        // [ACVP patch] Only the ACVP_TEST target passes `Some` (and only in an `acvp` build): the lab's
+        // 48-byte message is the digest for the LMS leg and the ECC leg is skipped.
+        acvp_digest: Option<&ImageDigest384>,
     ) -> CaliptraResult<()> {
         let range = AuthManifestPreamble::vendor_signed_data_range();
-        let digest_vendor = Self::sha384_digest(
-            sha2,
-            auth_manifest_preamble.as_bytes(),
-            range.start,
-            range.len() as u32,
-        )?;
+        let acvp_lms_only = cfg!(feature = "acvp") && acvp_digest.is_some();
+        let digest_vendor = match acvp_digest {
+            Some(digest) if acvp_lms_only => *digest,
+            _ => Self::sha384_digest(
+                sha2,
+                auth_manifest_preamble.as_bytes(),
+                range.start,
+                range.len() as u32,
+            )?,
+        };
 
-        // Verify the vendor ECC signature.
-        let verify_r = Self::ecc384_verify(
-            ecc384,
-            &digest_vendor,
-            &fw_preamble.vendor_ecc_active_pub_key,
-            &auth_manifest_preamble.vendor_pub_keys_signatures.ecc_sig,
-        )
-        .map_err(|_| CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID)?;
-        if cfi_launder(verify_r)
-            != caliptra_drivers::Array4xN(
-                auth_manifest_preamble.vendor_pub_keys_signatures.ecc_sig.r,
+        if !acvp_lms_only {
+            // Verify the vendor ECC signature.
+            let verify_r = Self::ecc384_verify(
+                ecc384,
+                &digest_vendor,
+                &fw_preamble.vendor_ecc_active_pub_key,
+                &auth_manifest_preamble.vendor_pub_keys_signatures.ecc_sig,
             )
-        {
-            Err(CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID)?;
-        } else {
-            caliptra_cfi_lib::cfi_assert_eq_12_words(
-                &verify_r.0,
-                &auth_manifest_preamble.vendor_pub_keys_signatures.ecc_sig.r,
-            );
+            .map_err(|_| CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID)?;
+            if cfi_launder(verify_r)
+                != caliptra_drivers::Array4xN(
+                    auth_manifest_preamble.vendor_pub_keys_signatures.ecc_sig.r,
+                )
+            {
+                Err(CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID)?;
+            } else {
+                caliptra_cfi_lib::cfi_assert_eq_12_words(
+                    &verify_r.0,
+                    &auth_manifest_preamble.vendor_pub_keys_signatures.ecc_sig.r,
+                );
+            }
         }
 
         // Verify vendor PQC signature.
@@ -207,35 +219,43 @@ impl SetAuthManifestCmd {
         sha256: &mut Sha256,
         mldsa: &mut Mldsa87<'_>,
         pqc_key_type: FwVerificationPqcKeyType,
+        // [ACVP patch] See `verify_vendor_signed_data`.
+        acvp_digest: Option<&ImageDigest384>,
     ) -> CaliptraResult<()> {
         let range = AuthManifestPreamble::owner_pub_keys_range();
-        let digest_owner = Self::sha384_digest(
-            sha2,
-            auth_manifest_preamble.as_bytes(),
-            range.start,
-            range.len() as u32,
-        )?;
+        let acvp_lms_only = cfg!(feature = "acvp") && acvp_digest.is_some();
+        let digest_owner = match acvp_digest {
+            Some(digest) if acvp_lms_only => *digest,
+            _ => Self::sha384_digest(
+                sha2,
+                auth_manifest_preamble.as_bytes(),
+                range.start,
+                range.len() as u32,
+            )?,
+        };
 
-        // Verify the owner ECC signature.
-        let owner_fw_ecc_key = &fw_preamble.owner_pub_keys.ecc_pub_key;
-        let verify_r = Self::ecc384_verify(
-            ecc384,
-            &digest_owner,
-            owner_fw_ecc_key,
-            &auth_manifest_preamble.owner_pub_keys_signatures.ecc_sig,
-        )
-        .map_err(|_| CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID)?;
-        if cfi_launder(verify_r)
-            != caliptra_drivers::Array4xN(
-                auth_manifest_preamble.owner_pub_keys_signatures.ecc_sig.r,
+        if !acvp_lms_only {
+            // Verify the owner ECC signature.
+            let owner_fw_ecc_key = &fw_preamble.owner_pub_keys.ecc_pub_key;
+            let verify_r = Self::ecc384_verify(
+                ecc384,
+                &digest_owner,
+                owner_fw_ecc_key,
+                &auth_manifest_preamble.owner_pub_keys_signatures.ecc_sig,
             )
-        {
-            Err(CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID)?;
-        } else {
-            caliptra_cfi_lib::cfi_assert_eq_12_words(
-                &verify_r.0,
-                &auth_manifest_preamble.owner_pub_keys_signatures.ecc_sig.r,
-            );
+            .map_err(|_| CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID)?;
+            if cfi_launder(verify_r)
+                != caliptra_drivers::Array4xN(
+                    auth_manifest_preamble.owner_pub_keys_signatures.ecc_sig.r,
+                )
+            {
+                Err(CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID)?;
+            } else {
+                caliptra_cfi_lib::cfi_assert_eq_12_words(
+                    &verify_r.0,
+                    &auth_manifest_preamble.owner_pub_keys_signatures.ecc_sig.r,
+                );
+            }
         }
 
         // Verify owner LMS signature.
@@ -309,38 +329,42 @@ impl SetAuthManifestCmd {
         _sha2: &mut Sha2_512_384,
         pqc_key_type: FwVerificationPqcKeyType,
         metadata_col: &[u8],
+        // [ACVP patch] Only the ACVP_TEST target passes `true` (and only in an `acvp` build): skip the ECC leg.
+        acvp_lms_only: bool,
     ) -> CaliptraResult<()> {
         let flags = AuthManifestFlags::from(auth_manifest_preamble.flags);
         if !flags.contains(AuthManifestFlags::VENDOR_SIGNATURE_REQUIRED) {
             return Ok(());
         }
-        // Verify the vendor ECC signature over the image metadata collection.
-        let verify_r = Self::ecc384_verify(
-            ecc384,
-            image_metadata_col_digest,
-            &auth_manifest_preamble.vendor_pub_keys.ecc_pub_key,
-            &auth_manifest_preamble
-                .vendor_image_metdata_signatures
-                .ecc_sig,
-        )
-        .map_err(|_| CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID)?;
-        if cfi_launder(verify_r)
-            != caliptra_drivers::Array4xN(
-                auth_manifest_preamble
-                    .vendor_image_metdata_signatures
-                    .ecc_sig
-                    .r,
-            )
-        {
-            Err(CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID)?;
-        } else {
-            caliptra_cfi_lib::cfi_assert_eq_12_words(
-                &verify_r.0,
+        if !(cfg!(feature = "acvp") && acvp_lms_only) {
+            // Verify the vendor ECC signature over the image metadata collection.
+            let verify_r = Self::ecc384_verify(
+                ecc384,
+                image_metadata_col_digest,
+                &auth_manifest_preamble.vendor_pub_keys.ecc_pub_key,
                 &auth_manifest_preamble
                     .vendor_image_metdata_signatures
-                    .ecc_sig
-                    .r,
-            );
+                    .ecc_sig,
+            )
+            .map_err(|_| CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID)?;
+            if cfi_launder(verify_r)
+                != caliptra_drivers::Array4xN(
+                    auth_manifest_preamble
+                        .vendor_image_metdata_signatures
+                        .ecc_sig
+                        .r,
+                )
+            {
+                Err(CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID)?;
+            } else {
+                caliptra_cfi_lib::cfi_assert_eq_12_words(
+                    &verify_r.0,
+                    &auth_manifest_preamble
+                        .vendor_image_metdata_signatures
+                        .ecc_sig
+                        .r,
+                );
+            }
         }
 
         // Verify vendor PQC signature over the image metadata collection.
@@ -421,34 +445,38 @@ impl SetAuthManifestCmd {
         _sha2: &mut Sha2_512_384,
         pqc_key_type: FwVerificationPqcKeyType,
         metadata_col: &[u8],
+        // [ACVP patch] Only the ACVP_TEST target passes `true` (and only in an `acvp` build): skip the ECC leg.
+        acvp_lms_only: bool,
     ) -> CaliptraResult<()> {
-        // Verify the owner ECC signature.
-        let verify_r = Self::ecc384_verify(
-            ecc384,
-            image_metadata_col_digest,
-            &auth_manifest_preamble.owner_pub_keys.ecc_pub_key,
-            &auth_manifest_preamble
-                .owner_image_metdata_signatures
-                .ecc_sig,
-        )
-        .map_err(|_| CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID)?;
-        if cfi_launder(verify_r)
-            != caliptra_drivers::Array4xN(
-                auth_manifest_preamble
-                    .owner_image_metdata_signatures
-                    .ecc_sig
-                    .r,
-            )
-        {
-            Err(CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID)?;
-        } else {
-            caliptra_cfi_lib::cfi_assert_eq_12_words(
-                &verify_r.0,
+        if !(cfg!(feature = "acvp") && acvp_lms_only) {
+            // Verify the owner ECC signature.
+            let verify_r = Self::ecc384_verify(
+                ecc384,
+                image_metadata_col_digest,
+                &auth_manifest_preamble.owner_pub_keys.ecc_pub_key,
                 &auth_manifest_preamble
                     .owner_image_metdata_signatures
-                    .ecc_sig
-                    .r,
-            );
+                    .ecc_sig,
+            )
+            .map_err(|_| CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID)?;
+            if cfi_launder(verify_r)
+                != caliptra_drivers::Array4xN(
+                    auth_manifest_preamble
+                        .owner_image_metdata_signatures
+                        .ecc_sig
+                        .r,
+                )
+            {
+                Err(CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID)?;
+            } else {
+                caliptra_cfi_lib::cfi_assert_eq_12_words(
+                    &verify_r.0,
+                    &auth_manifest_preamble
+                        .owner_image_metdata_signatures
+                        .ecc_sig
+                        .r,
+                );
+            }
         }
 
         // Verify owner PQC signature.
@@ -562,6 +590,9 @@ impl SetAuthManifestCmd {
         mldsa: &mut Mldsa87<'_>,
         pqc_key_type: FwVerificationPqcKeyType,
         verify_only: bool,
+        // [ACVP patch] Only the ACVP_TEST target passes `true` (and only in an `acvp` build): the structure
+        // checks and the processing after the signature checks are skipped for a raw vector message.
+        acvp_raw: bool,
     ) -> CaliptraResult<()> {
         if cmd_buf.len() < size_of::<u32>() {
             Err(CaliptraError::RUNTIME_AUTH_MANIFEST_IMAGE_METADATA_LIST_INVALID_SIZE)?;
@@ -581,16 +612,21 @@ impl SetAuthManifestCmd {
         let metadata_mailbox =
             unsafe { &mut *(buf.as_ptr() as *mut AuthManifestImageMetadataCollection) };
 
-        if metadata_mailbox.entry_count == 0
-            || metadata_mailbox.entry_count > AUTH_MANIFEST_IMAGE_METADATA_MAX_COUNT as u32
+        // [ACVP patch] The entry-count and size validation needs a well-formed metadata collection, which
+        // an arbitrary vector message is not; the ACVP_TEST target skips it (`acvp_raw`, `acvp` builds only).
+        let acvp_raw = cfg!(feature = "acvp") && acvp_raw;
+        if !acvp_raw
+            && (metadata_mailbox.entry_count == 0
+                || metadata_mailbox.entry_count > AUTH_MANIFEST_IMAGE_METADATA_MAX_COUNT as u32)
         {
             Err(CaliptraError::RUNTIME_AUTH_MANIFEST_IMAGE_METADATA_LIST_INVALID_ENTRY_COUNT)?;
         }
 
         // Check if the buffer contains the entry count and all the image metadata entries specified by the entry count.
-        if buf.len()
-            < (size_of::<u32>()
-                + metadata_mailbox.entry_count as usize * size_of::<AuthManifestImageMetadata>())
+        if !acvp_raw
+            && buf.len()
+                < (size_of::<u32>()
+                    + metadata_mailbox.entry_count as usize * size_of::<AuthManifestImageMetadata>())
         {
             Err(CaliptraError::RUNTIME_AUTH_MANIFEST_IMAGE_METADATA_LIST_INVALID_SIZE)?;
         }
@@ -607,6 +643,7 @@ impl SetAuthManifestCmd {
             sha2,
             pqc_key_type,
             buf,
+            false,
         )?;
 
         Self::verify_owner_image_metadata_col(
@@ -618,7 +655,14 @@ impl SetAuthManifestCmd {
             sha2,
             pqc_key_type,
             buf,
+            false,
         )?;
+
+        // [ACVP patch] Stop after the signature checks: the sort and the update of the persistent
+        // metadata collection need a well-formed collection.
+        if acvp_raw {
+            return Ok(());
+        }
 
         // Sort the image metadata list by firmware ID in place. Also check for duplicate firmware IDs.        let slice =
         let slice =
@@ -769,6 +813,7 @@ impl SetAuthManifestCmd {
                 &mut drivers.sha256,
                 &mut mldsa87,
                 pqc_key_type,
+                None,
             )?;
 
             // Verify the owner public keys.
@@ -780,6 +825,7 @@ impl SetAuthManifestCmd {
                 &mut drivers.sha256,
                 &mut mldsa87,
                 pqc_key_type,
+                None,
             )?;
 
             Self::process_image_metadata_col(
@@ -794,6 +840,7 @@ impl SetAuthManifestCmd {
                 &mut mldsa87,
                 pqc_key_type,
                 verify_only,
+                false,
             )
         })?;
 

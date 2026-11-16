@@ -27,6 +27,7 @@ mod ecdsa;
 mod hmac;
 mod kdf;
 mod ports;
+mod verify;
 mod pqc;
 mod sha;
 
@@ -91,6 +92,13 @@ impl<'a> Fields<'a> {
         self.off = start.checked_add(padded).ok_or_else(invalid)?;
         self.left -= 1;
         Ok(field)
+    }
+
+    /// Like `next`, and also returns the byte offset of the field's data within the request
+    /// (the mailbox contents), for hardware that reads the mailbox itself.
+    pub(crate) fn next_at(&mut self) -> CaliptraResult<(&'a [u8], usize)> {
+        let start = self.off.checked_add(4).ok_or_else(invalid)?;
+        Ok((self.next()?, start))
     }
 
     /// Returns the next field as a little-endian u32.
@@ -166,6 +174,18 @@ fn dispatch(
         ACVP_TARGET_PORT_DERIVE_KEY_PAIR => ports::derive_key_pair(drivers, fields, out),
         ACVP_TARGET_CM_ECDSA_VERIFY => cm::ecdsa_verify(drivers, fields),
         ACVP_TARGET_ATTESTED_ECC_CSR | ACVP_TARGET_RT_ALIAS_ECC_CSR => csr::sign(drivers, target, fields, out),
+        ACVP_TARGET_HEADER_VENDOR_ECC | ACVP_TARGET_HEADER_OWNER_ECC => {
+            verify::header_ecc(drivers, target, fields)
+        }
+        ACVP_TARGET_HEADER_LMS => verify::header_lms(drivers, fields),
+        ACVP_TARGET_METADATA_VENDOR_ECC | ACVP_TARGET_METADATA_OWNER_ECC => {
+            verify::metadata_ecc(drivers, target, fields)
+        }
+        ACVP_TARGET_DEBUG_UNLOCK_TOKEN => verify::debug_unlock_token(drivers, fields),
+        ACVP_TARGET_LMS_VENDOR_SIGNED_DATA
+        | ACVP_TARGET_LMS_OWNER_PUB_KEYS
+        | ACVP_TARGET_LMS_VENDOR_METADATA
+        | ACVP_TARGET_LMS_OWNER_METADATA => verify::manifest_lms_leg(drivers, target, fields),
         _ => Err(CaliptraError::RUNTIME_UNIMPLEMENTED_COMMAND),
     }
 }

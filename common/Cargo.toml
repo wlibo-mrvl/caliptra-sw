@@ -33,3 +33,5 @@ rom = ["caliptra-drivers/rom"]
 fmc = []
 runtime = []
 cfi = ["caliptra-drivers/cfi"]
+# ACVP test image only: see the [ACVP patch] marks in debug_unlock.rs.
+acvp = []

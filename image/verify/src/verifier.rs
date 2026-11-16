@@ -943,6 +943,41 @@ impl<Env: ImageVerificationEnv> ImageVerifier<Env> {
         Ok(())
     }
 
+    /// [ACVP patch] Hash `len` bytes at `offset` of the image source with the accelerator digest that
+    /// `verify_header` uses for both header digests, then run the unchanged `verify_ecc_sig` on it
+    /// (`is_owner` selects the owner or the vendor arm). The ACVP_TEST command points the image source at
+    /// the lab's message.
+    #[cfg(feature = "acvp")]
+    pub fn acvp_verify_ecc_sig(
+        &mut self,
+        offset: u32,
+        len: u32,
+        pub_key: &ImageEccPubKey,
+        sig: &ImageEccSignature,
+        is_owner: bool,
+    ) -> CaliptraResult<()> {
+        let digest = self.env.sha384_acc_digest(
+            offset,
+            len,
+            CaliptraError::IMAGE_VERIFIER_ERR_HEADER_DIGEST_FAILURE,
+        )?;
+        self.verify_ecc_sig(&digest, pub_key, sig, is_owner)
+    }
+
+    /// [ACVP patch] `verify_lms_sig` on the lab's message: the 48-byte message is the digest input of the
+    /// function (LMS signs the 48-byte header digest), so it is passed in as given and the LMS signature is
+    /// over exactly those bytes, as in a standard LMS vector.
+    #[cfg(feature = "acvp")]
+    pub fn acvp_verify_lms_sig(
+        &mut self,
+        digest: &ImageDigest384,
+        lms_pub_key: &ImageLmsPublicKey,
+        lms_sig: &ImageLmsSignature,
+        is_owner: bool,
+    ) -> CaliptraResult<()> {
+        self.verify_lms_sig(digest, lms_pub_key, lms_sig, is_owner)
+    }
+
     /// Verify MLDSA Signature
     fn verify_mldsa_sig(
         &mut self,

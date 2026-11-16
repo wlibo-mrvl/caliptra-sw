@@ -20,10 +20,12 @@ use caliptra_api::mailbox::{
 };
 use caliptra_cfi_lib::{cfi_assert_eq_12_words, cfi_assert_eq_8_words, cfi_launder};
 use caliptra_drivers::{
-    sha2_512_384::Sha2DigestOpTrait, Array4x12, Array4x16, Array4x8, AxiAddr, Dma, Ecc384,
-    Ecc384PubKey, Ecc384Result, Ecc384Scalar, Ecc384Signature, LEArray4x16, Mldsa87, Mldsa87PubKey,
-    Mldsa87Result, Mldsa87Signature, Sha2_512_384, SocIfc, Trng,
+    sha2_512_384::Sha2DigestOpTrait, Array4x12, Array4x8, AxiAddr, Dma, Ecc384, Ecc384PubKey,
+    Ecc384Result, Ecc384Scalar, Ecc384Signature, Mldsa87, Sha2_512_384, SocIfc, Trng,
 };
+// Only the ML-DSA leg uses these; it is compiled out of an `acvp` build.
+#[cfg(not(feature = "acvp"))]
+use caliptra_drivers::{Array4x16, LEArray4x16, Mldsa87PubKey, Mldsa87Result, Mldsa87Signature};
 use caliptra_error::{CaliptraError, CaliptraResult};
 use zerocopy::IntoBytes;
 
@@ -150,32 +152,39 @@ pub fn validate_debug_unlock_token(
         );
     }
 
-    // Hash the ECC and MLDSA public keys from the local stack copy.
-    let pub_keys_digest = {
-        let mut request_digest = Array4x12::default();
-        let mut digest_op = sha2_512_384.sha384_digest_init()?;
-        digest_op.update(token.ecc_public_key.as_bytes())?;
-        digest_op.update(token.mldsa_public_key.as_bytes())?;
-        digest_op.finalize(&mut request_digest)?;
-        request_digest
-    };
+    // [ACVP patch] The public-key hash comparison (against the debug-auth PK hash read from MCI over DMA)
+    // and the ML-DSA leg below are not part of ECDSA and are compiled out of an `acvp` build.
+    #[cfg(feature = "acvp")]
+    let _ = (soc_ifc, &dma, &mldsa87);
+    #[cfg(not(feature = "acvp"))]
+    {
+        // Hash the ECC and MLDSA public keys from the local stack copy.
+        let pub_keys_digest = {
+            let mut request_digest = Array4x12::default();
+            let mut digest_op = sha2_512_384.sha384_digest_init()?;
+            digest_op.update(token.ecc_public_key.as_bytes())?;
+            digest_op.update(token.mldsa_public_key.as_bytes())?;
+            digest_op.finalize(&mut request_digest)?;
+            request_digest
+        };
 
-    let debug_auth_pk_offset =
-        soc_ifc.debug_unlock_pk_hash_offset(token.unlock_level as u32)? as u64;
-    let mci_base: AxiAddr = soc_ifc.mci_base_addr().into();
-    let debug_auth_pk_hash_base = mci_base + debug_auth_pk_offset;
+        let debug_auth_pk_offset =
+            soc_ifc.debug_unlock_pk_hash_offset(token.unlock_level as u32)? as u64;
+        let mci_base: AxiAddr = soc_ifc.mci_base_addr().into();
+        let debug_auth_pk_hash_base = mci_base + debug_auth_pk_offset;
 
-    let mut fuse_digest: [u32; 12] = [0; 12];
-    dma.read_buffer(debug_auth_pk_hash_base, &mut fuse_digest);
+        let mut fuse_digest: [u32; 12] = [0; 12];
+        dma.read_buffer(debug_auth_pk_hash_base, &mut fuse_digest);
 
-    // Verify the fuse digest matches with the ECC and MLDSA public key digest.
-    let fuse_digest = Array4x12::from(fuse_digest);
+        // Verify the fuse digest matches with the ECC and MLDSA public key digest.
+        let fuse_digest = Array4x12::from(fuse_digest);
 
-    if cfi_launder(pub_keys_digest) != fuse_digest {
-        crate::cprintln!("Public keys hash mismatch");
-        Err(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_TOKEN_WRONG_PUBLIC_KEYS)?;
-    } else {
-        cfi_assert_eq_12_words(&pub_keys_digest.0, &fuse_digest.0);
+        if cfi_launder(pub_keys_digest) != fuse_digest {
+            crate::cprintln!("Public keys hash mismatch");
+            Err(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_TOKEN_WRONG_PUBLIC_KEYS)?;
+        } else {
+            cfi_assert_eq_12_words(&pub_keys_digest.0, &fuse_digest.0);
+        }
     }
 
     // Verify that the Unique Device Identifier, Unlock Category and Challenge signature is valid.
@@ -190,10 +199,32 @@ pub fn validate_debug_unlock_token(
 
     // Create ECC message hash
     let mut digest_op = sha2_512_384.sha384_digest_init()?;
-    digest_op.update(&token.unique_device_identifier)?;
-    digest_op.update(&[token.unlock_level])?;
-    digest_op.update(&token.reserved)?;
-    digest_op.update(&token.challenge)?;
+    #[cfg(not(feature = "acvp"))]
+    {
+        digest_op.update(&token.unique_device_identifier)?;
+        digest_op.update(&[token.unlock_level])?;
+        digest_op.update(&token.reserved)?;
+        digest_op.update(&token.challenge)?;
+    }
+    // [ACVP patch] An `acvp` build hashes the lab's message (its own length, not the 84-byte structure).
+    // The ACVP_TEST command carries it in the (otherwise unused) ML-DSA public key field as
+    // [len u32 LE][bytes].
+    #[cfg(feature = "acvp")]
+    {
+        let carrier = token.mldsa_public_key.as_bytes();
+        let len = carrier
+            .get(..4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+            .ok_or(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_TOKEN_CHALLENGE)?
+            as usize;
+        digest_op.update(
+            carrier
+                .get(4..)
+                .and_then(|b| b.get(..len))
+                .ok_or(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_TOKEN_CHALLENGE)?,
+        )?;
+    }
 
     let mut ecc_msg = Array4x12::default();
     digest_op.finalize(&mut ecc_msg)?;
@@ -203,27 +234,30 @@ pub fn validate_debug_unlock_token(
         Err(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_TOKEN_INVALID_SIGNATURE)?;
     }
 
-    // Create MLDSA message hash
-    let mut digest_op = sha2_512_384.sha512_digest_init()?;
-    digest_op.update(&token.unique_device_identifier)?;
-    digest_op.update(&[token.unlock_level])?;
-    digest_op.update(&token.reserved)?;
-    digest_op.update(&token.challenge)?;
-    let mut mldsa_msg = Array4x16::default();
-    digest_op.finalize(&mut mldsa_msg)?;
+    #[cfg(not(feature = "acvp"))]
+    {
+        // Create MLDSA message hash
+        let mut digest_op = sha2_512_384.sha512_digest_init()?;
+        digest_op.update(&token.unique_device_identifier)?;
+        digest_op.update(&[token.unlock_level])?;
+        digest_op.update(&token.reserved)?;
+        digest_op.update(&token.challenge)?;
+        let mut mldsa_msg = Array4x16::default();
+        digest_op.finalize(&mut mldsa_msg)?;
 
-    // Convert the digest to little endian format for MLDSA.
-    let mldsa_msg: LEArray4x16 = mldsa_msg.into();
+        // Convert the digest to little endian format for MLDSA.
+        let mldsa_msg: LEArray4x16 = mldsa_msg.into();
 
-    let result = mldsa87.verify_var(
-        &Mldsa87PubKey::from(&token.mldsa_public_key),
-        mldsa_msg.as_bytes(),
-        &Mldsa87Signature::from(&token.mldsa_signature),
-    )?;
+        let result = mldsa87.verify_var(
+            &Mldsa87PubKey::from(&token.mldsa_public_key),
+            mldsa_msg.as_bytes(),
+            &Mldsa87Signature::from(&token.mldsa_signature),
+        )?;
 
-    if result == Mldsa87Result::SigVerifyFailed {
-        crate::cprintln!("MLDSA Signature verification failed");
-        Err(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_TOKEN_INVALID_SIGNATURE)?;
+        if result == Mldsa87Result::SigVerifyFailed {
+            crate::cprintln!("MLDSA Signature verification failed");
+            Err(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_TOKEN_INVALID_SIGNATURE)?;
+        }
     }
 
     Ok(())

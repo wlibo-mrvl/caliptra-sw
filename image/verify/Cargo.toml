@@ -27,3 +27,5 @@ default = ["std", "cfi"]
 std = ["caliptra-image-types/std"]
 cfi = []
 fips-test-hooks = []
+# ACVP test image only: exposes the ECC / LMS signature checks to the ACVP_TEST command.
+acvp = []

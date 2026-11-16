@@ -94,7 +94,7 @@ flash-boot = []
 verilator = ["caliptra-hw-model/verilator"]
 fips_self_test = []
 # Test-only ACVP command (CommandId::ACVP_TEST). Never enable in a production image.
-acvp = []
+acvp = ["caliptra-image-verify/acvp", "caliptra-common/acvp"]
 cfi = [
     "caliptra-image-types/cfi",
     "caliptra-image-verify/cfi",

@@ -808,6 +808,131 @@ fn test_acvp_csr_generators_sign_the_message() {
     }
 }
 
+/// ECDSA SigVer through the verifier / manifest / debug-unlock paths: the message is hashed by the code under
+/// test (accelerator digest or engine) and any message length works; a valid signature is accepted, any change
+/// is rejected.
+#[test]
+fn test_acvp_verifier_style_ecdsa_targets() {
+    use p384::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
+    let mut model = acvp_model();
+    let key = SigningKey::from_slice(&data(48, 0x51)).unwrap();
+    let point = key.verifying_key().to_encoded_point(false);
+    let (qx, qy) = (point.x().unwrap().to_vec(), point.y().unwrap().to_vec());
+    let other = SigningKey::from_slice(&data(48, 0x52)).unwrap();
+    let op = other.verifying_key().to_encoded_point(false);
+    for target in [
+        ACVP_TARGET_HEADER_VENDOR_ECC,
+        ACVP_TARGET_HEADER_OWNER_ECC,
+        ACVP_TARGET_METADATA_VENDOR_ECC,
+        ACVP_TARGET_METADATA_OWNER_ECC,
+        ACVP_TARGET_DEBUG_UNLOCK_TOKEN,
+    ] {
+        // (the metadata path needs at least four bytes: its entry count)
+        for len in [8usize, 84, 128, 1000] {
+            let msg = data(len, 0x33);
+            let sig: Signature = key.sign_prehash(&Sha384::digest(&msg)).unwrap();
+            let (r, s) = (sig.r().to_bytes().to_vec(), sig.s().to_bytes().to_vec());
+            let call = |model: &mut DefaultHwModel, qx: &[u8], qy: &[u8], r: &[u8], msg: &[u8]| {
+                acvp_call(model, target, &[qx, qy, r, &s, msg]).result
+            };
+            assert_eq!(
+                call(&mut model, &qx, &qy, &r, &msg),
+                ACVP_RESULT_OK,
+                "valid, target 0x{target:x}, {len} B"
+            );
+            let mut bad = msg.clone();
+            bad[len / 2] ^= 1;
+            assert_eq!(call(&mut model, &qx, &qy, &r, &bad), ACVP_RESULT_FALSE, "target 0x{target:x}");
+            let mut bad_r = r.clone();
+            bad_r[9] ^= 1;
+            assert_eq!(call(&mut model, &qx, &qy, &bad_r, &msg), ACVP_RESULT_FALSE);
+            assert_eq!(
+                call(&mut model, op.x().unwrap(), op.y().unwrap(), &r, &msg),
+                ACVP_RESULT_FALSE,
+                "a different key"
+            );
+        }
+    }
+}
+
+/// `verify_lms_sig` on the lab's 48-byte message: passed in as the digest, so the signature is over exactly
+/// those bytes. The known-good LMS vector is over SHA-384 of MSG_1, so its digest is the message here.
+#[test]
+fn test_acvp_header_lms_message_is_the_digest() {
+    let mut model = acvp_model();
+    let msg = Sha384::digest(crate::test_lms::MSG_1).to_vec();
+    let pk = crate::test_lms::MSG_1_PUB_KEY_1;
+    let sig = crate::test_lms::MSG_1_KEY_1_SIG_1;
+    let call = |model: &mut DefaultHwModel, pk: &[u8], sig: &[u8], msg: &[u8]| {
+        acvp_call(model, ACVP_TARGET_HEADER_LMS, &[pk, sig, msg]).result
+    };
+    assert_eq!(call(&mut model, &pk, &sig, &msg), ACVP_RESULT_OK, "valid");
+    let mut bad = msg.clone();
+    bad[10] ^= 1;
+    assert_eq!(call(&mut model, &pk, &sig, &bad), ACVP_RESULT_FALSE, "changed message");
+    let mut bad_sig = sig;
+    bad_sig[1000] ^= 1;
+    assert_eq!(call(&mut model, &pk, &bad_sig, &msg), ACVP_RESULT_FALSE);
+    let mut bad_pk = pk;
+    bad_pk[47] ^= 1;
+    assert_eq!(call(&mut model, &bad_pk, &sig, &msg), ACVP_RESULT_FALSE);
+    // Only a 48-byte message is a digest: any other length is a malformed request.
+    let req = build_req(ACVP_TARGET_HEADER_LMS, &[&pk, &sig, &msg[..47]]);
+    assert!(model
+        .mailbox_execute(u32::from(CommandId::ACVP_TEST), &req)
+        .is_err());
+}
+
+/// One call to one verifier-style target (ACVP_PROBE_TARGET, hex), to find a hang quickly.
+#[test]
+#[ignore = "debug probe"]
+fn test_acvp_verifier_style_probe() {
+    use p384::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
+    let mut model = acvp_model();
+    let key = SigningKey::from_slice(&data(48, 0x51)).unwrap();
+    let point = key.verifying_key().to_encoded_point(false);
+    let (qx, qy) = (point.x().unwrap().to_vec(), point.y().unwrap().to_vec());
+    let msg = data(128, 0x33);
+    let sig: Signature = key.sign_prehash(&Sha384::digest(&msg)).unwrap();
+    let (r, s) = (sig.r().to_bytes().to_vec(), sig.s().to_bytes().to_vec());
+    let which: u32 = std::env::var("ACVP_PROBE_TARGET")
+        .ok()
+        .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(ACVP_TARGET_HEADER_VENDOR_ECC);
+    println!("probe target 0x{which:x}");
+    let resp = acvp_call(&mut model, which, &[&qx, &qy, &r, &s, &msg]);
+    println!("probe result {} err 0x{:08x}", resp.result, resp.err_code);
+}
+
+/// The LMS legs of the manifest verifiers: the 48-byte message is the digest, the ECC leg is skipped.
+#[test]
+fn test_acvp_manifest_lms_legs() {
+    let mut model = acvp_model();
+    let msg = Sha384::digest(crate::test_lms::MSG_1).to_vec();
+    let pk = crate::test_lms::MSG_1_PUB_KEY_1;
+    let sig = crate::test_lms::MSG_1_KEY_1_SIG_1;
+    for target in [
+        ACVP_TARGET_LMS_VENDOR_SIGNED_DATA,
+        ACVP_TARGET_LMS_OWNER_PUB_KEYS,
+        ACVP_TARGET_LMS_VENDOR_METADATA,
+        ACVP_TARGET_LMS_OWNER_METADATA,
+    ] {
+        let call = |model: &mut DefaultHwModel, pk: &[u8], sig: &[u8], msg: &[u8]| {
+            acvp_call(model, target, &[pk, sig, msg]).result
+        };
+        assert_eq!(call(&mut model, &pk, &sig, &msg), ACVP_RESULT_OK, "valid, 0x{target:x}");
+        let mut bad = msg.clone();
+        bad[5] ^= 1;
+        assert_eq!(call(&mut model, &pk, &sig, &bad), ACVP_RESULT_FALSE, "0x{target:x}");
+        let mut bad_sig = sig;
+        bad_sig[900] ^= 1;
+        assert_eq!(call(&mut model, &pk, &bad_sig, &msg), ACVP_RESULT_FALSE);
+        let mut bad_pk = pk;
+        bad_pk[47] ^= 1;
+        assert_eq!(call(&mut model, &bad_pk, &sig, &msg), ACVP_RESULT_FALSE);
+    }
+}
+
 #[test]
 fn test_acvp_cm_encrypt_targets() {
     use aes_gcm::aead::{Aead, KeyInit};

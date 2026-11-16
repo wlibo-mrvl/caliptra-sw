@@ -111,6 +111,31 @@ pub const ACVP_TARGET_CM_ECDSA_VERIFY: u32 = 0x0804;
 /// Runtime must have booted normally.
 pub const ACVP_TARGET_ATTESTED_ECC_CSR: u32 = 0x0810;
 pub const ACVP_TARGET_RT_ALIAS_ECC_CSR: u32 = 0x0811;
+/// `verify_header` arms (ECDSA SigVer): the message is hashed with the accelerator digest that `verify_header`
+/// uses (the SHA accelerator reads it from the mailbox), then the unchanged `verify_ecc_sig` runs on the digest
+/// (`acvp` patch in image/verify). 0x0820 = vendor arm (the `sha384_digest` entries), 0x0821 = owner arm (the
+/// `verify_ecc_sig` entries). Fields: [qx 48][qy 48][r 48][s 48][message]. Result OK = valid, FALSE = invalid.
+pub const ACVP_TARGET_HEADER_VENDOR_ECC: u32 = 0x0820;
+pub const ACVP_TARGET_HEADER_OWNER_ECC: u32 = 0x0821;
+/// `verify_lms_sig` on the lab's 48-byte message, which is the function's digest input (the LMS signature is over
+/// exactly those bytes, as in a standard LMS vector). Fields: [pk 48][sig 1620][message 48].
+pub const ACVP_TARGET_HEADER_LMS: u32 = 0x0822;
+/// `process_image_metadata_col` (ECDSA arm; `acvp` patch compiles out the entry-count / size validation and the
+/// processing after the signature checks). 0x0830 = vendor arm, 0x0831 = owner arm. Fields as 0x0820. The PQC leg that
+/// follows has no signature, so the verdict is the ECC leg's: the arm's ECC-signature-invalid error means FALSE.
+pub const ACVP_TARGET_METADATA_VENDOR_ECC: u32 = 0x0830;
+pub const ACVP_TARGET_METADATA_OWNER_ECC: u32 = 0x0831;
+/// LMS legs of the manifest verifiers (option A: the lab's 48-byte message is the digest for the LMS leg, the ECC leg is
+/// skipped by an `acvp` argument): 0x0850 `verify_vendor_signed_data`, 0x0851 `verify_owner_pub_keys`,
+/// 0x0852 `verify_vendor_image_metadata_col`, 0x0853 `verify_owner_image_metadata_col`.
+/// Fields: [pk 48][sig 1620][message 48]. Result OK = valid, FALSE = invalid.
+pub const ACVP_TARGET_LMS_VENDOR_SIGNED_DATA: u32 = 0x0850;
+pub const ACVP_TARGET_LMS_OWNER_PUB_KEYS: u32 = 0x0851;
+pub const ACVP_TARGET_LMS_VENDOR_METADATA: u32 = 0x0852;
+pub const ACVP_TARGET_LMS_OWNER_METADATA: u32 = 0x0853;
+/// `validate_debug_unlock_token` (`acvp` patch: hashes the lab's message of its own length, PK-hash comparison and
+/// ML-DSA leg compiled out). Fields: [qx 48][qy 48][r 48][s 48][message]. Result OK = valid, FALSE = invalid.
+pub const ACVP_TARGET_DEBUG_UNLOCK_TOKEN: u32 = 0x0840;
 /// Mailbox size in bytes when subsystem mode is enabled.
 pub const SUBSYSTEM_MAILBOX_SIZE_LIMIT: usize = 16 * 1024;
 /// Mailbox size in bytes when passive mode is enabled.
