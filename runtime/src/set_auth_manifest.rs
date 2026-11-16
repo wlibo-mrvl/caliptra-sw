@@ -108,15 +108,17 @@ impl SetAuthManifestCmd {
         sha256: &mut Sha256,
         mldsa: &mut Mldsa87<'_>,
         pqc_key_type: FwVerificationPqcKeyType,
-        // [ACVP patch] Only the ACVP_TEST target passes `Some` (and only in an `acvp` build): the lab's
-        // 48-byte message is the digest for the LMS leg and the ECC leg is skipped.
-        acvp_digest: Option<&ImageDigest384>,
+        // [ACVP patch] Only the ACVP_TEST target passes `Some((digest, skip_ecc_leg))` (and only in an `acvp`
+        // build): `digest` replaces the digest of the preamble range; for an LMS vector it is the 48-byte message
+        // and the ECC leg is skipped, for an ECDSA vector it is the hash of the message and the ECC leg runs.
+        acvp_digest: Option<(&ImageDigest384, bool)>,
     ) -> CaliptraResult<()> {
         let range = AuthManifestPreamble::vendor_signed_data_range();
-        let acvp_lms_only = cfg!(feature = "acvp") && acvp_digest.is_some();
+        let acvp_digest = if cfg!(feature = "acvp") { acvp_digest } else { None };
+        let acvp_lms_only = matches!(acvp_digest, Some((_, true)));
         let digest_vendor = match acvp_digest {
-            Some(digest) if acvp_lms_only => *digest,
-            _ => Self::sha384_digest(
+            Some((digest, _)) => *digest,
+            None => Self::sha384_digest(
                 sha2,
                 auth_manifest_preamble.as_bytes(),
                 range.start,
@@ -220,13 +222,14 @@ impl SetAuthManifestCmd {
         mldsa: &mut Mldsa87<'_>,
         pqc_key_type: FwVerificationPqcKeyType,
         // [ACVP patch] See `verify_vendor_signed_data`.
-        acvp_digest: Option<&ImageDigest384>,
+        acvp_digest: Option<(&ImageDigest384, bool)>,
     ) -> CaliptraResult<()> {
         let range = AuthManifestPreamble::owner_pub_keys_range();
-        let acvp_lms_only = cfg!(feature = "acvp") && acvp_digest.is_some();
+        let acvp_digest = if cfg!(feature = "acvp") { acvp_digest } else { None };
+        let acvp_lms_only = matches!(acvp_digest, Some((_, true)));
         let digest_owner = match acvp_digest {
-            Some(digest) if acvp_lms_only => *digest,
-            _ => Self::sha384_digest(
+            Some((digest, _)) => *digest,
+            None => Self::sha384_digest(
                 sha2,
                 auth_manifest_preamble.as_bytes(),
                 range.start,

@@ -5,7 +5,7 @@
 //! The `acvp` builds of those functions are the diffs listed in the ACVP analysis document.
 
 use super::{invalid, read_array, Fields, Outcome};
-use crate::set_auth_manifest::acvp_state::{LmsWhich, Which as MetaWhich};
+use crate::set_auth_manifest::acvp_state::{EccWhich, LmsWhich, Which as MetaWhich};
 use crate::Drivers;
 use caliptra_api::mailbox::*;
 use caliptra_common::verifier::{FirmwareImageVerificationEnv, ImageSource};
@@ -235,5 +235,21 @@ pub(crate) fn manifest_lms_leg(
     let sig: [u8; 1620] = read_array(fields.next()?)?;
     let msg: [u8; 48] = read_array(fields.next()?)?;
     let ok = crate::SetAuthManifestCmd::acvp_lms_leg(drivers, which, &pk, &sig, &msg)?;
+    Ok(verdict(ok))
+}
+
+/// ECC legs of `verify_vendor_signed_data` / `verify_owner_pub_keys` on the lab's message.
+pub(crate) fn manifest_ecc_leg(
+    drivers: &mut Drivers,
+    target: u32,
+    fields: &mut Fields,
+) -> CaliptraResult<Outcome> {
+    let which = if target == ACVP_TARGET_AUTHMAN_VENDOR_SIGNED_DATA_ECC {
+        EccWhich::VendorSignedData
+    } else {
+        EccWhich::OwnerPubKeys
+    };
+    let (qx, qy, r, s, msg, _) = key_sig_msg(fields)?;
+    let ok = crate::SetAuthManifestCmd::acvp_ecc_leg(drivers, which, &qx, &qy, &r, &s, msg)?;
     Ok(verdict(ok))
 }

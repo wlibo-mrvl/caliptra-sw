@@ -125,6 +125,12 @@ pub const ACVP_TARGET_HEADER_LMS: u32 = 0x0822;
 /// follows has no signature, so the verdict is the ECC leg's: the arm's ECC-signature-invalid error means FALSE.
 pub const ACVP_TARGET_METADATA_VENDOR_ECC: u32 = 0x0830;
 pub const ACVP_TARGET_METADATA_OWNER_ECC: u32 = 0x0831;
+/// ECC legs of `verify_vendor_signed_data` (0x0860, the `ecc384_verify` folders) and `verify_owner_pub_keys` (0x0861):
+/// the lab's message (its own length) is hashed with the function's `sha384_digest` helper and the digest replaces the
+/// digest of the fixed preamble range (`acvp_digest` argument). The PQC leg that follows has no signature, so the verdict is the
+/// ECC leg's. Fields: [qx 48][qy 48][r 48][s 48][message]. Result OK = valid, FALSE = invalid.
+pub const ACVP_TARGET_AUTHMAN_VENDOR_SIGNED_DATA_ECC: u32 = 0x0860;
+pub const ACVP_TARGET_AUTHMAN_OWNER_PUB_KEYS_ECC: u32 = 0x0861;
 /// LMS legs of the manifest verifiers (option A: the lab's 48-byte message is the digest for the LMS leg, the ECC leg is
 /// skipped by an `acvp` argument): 0x0850 `verify_vendor_signed_data`, 0x0851 `verify_owner_pub_keys`,
 /// 0x0852 `verify_vendor_image_metadata_col`, 0x0853 `verify_owner_image_metadata_col`.

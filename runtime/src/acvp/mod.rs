@@ -182,6 +182,9 @@ fn dispatch(
             verify::metadata_ecc(drivers, target, fields)
         }
         ACVP_TARGET_DEBUG_UNLOCK_TOKEN => verify::debug_unlock_token(drivers, fields),
+        ACVP_TARGET_AUTHMAN_VENDOR_SIGNED_DATA_ECC | ACVP_TARGET_AUTHMAN_OWNER_PUB_KEYS_ECC => {
+            verify::manifest_ecc_leg(drivers, target, fields)
+        }
         ACVP_TARGET_LMS_VENDOR_SIGNED_DATA
         | ACVP_TARGET_LMS_OWNER_PUB_KEYS
         | ACVP_TARGET_LMS_VENDOR_METADATA

@@ -826,6 +826,8 @@ fn test_acvp_verifier_style_ecdsa_targets() {
         ACVP_TARGET_METADATA_VENDOR_ECC,
         ACVP_TARGET_METADATA_OWNER_ECC,
         ACVP_TARGET_DEBUG_UNLOCK_TOKEN,
+        ACVP_TARGET_AUTHMAN_VENDOR_SIGNED_DATA_ECC,
+        ACVP_TARGET_AUTHMAN_OWNER_PUB_KEYS_ECC,
     ] {
         // (the metadata path needs at least four bytes: its entry count)
         for len in [8usize, 84, 128, 1000] {

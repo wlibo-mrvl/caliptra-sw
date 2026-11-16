@@ -156,7 +156,7 @@ impl SetAuthManifestCmd {
                 &mut drivers.sha256,
                 &mut m,
                 FwVerificationPqcKeyType::LMS,
-                Some(&digest),
+                Some((&digest, true)),
             ),
             LmsWhich::OwnerPubKeys => Self::verify_owner_pub_keys(
                 &preamble,
@@ -166,7 +166,7 @@ impl SetAuthManifestCmd {
                 &mut drivers.sha256,
                 &mut m,
                 FwVerificationPqcKeyType::LMS,
-                Some(&digest),
+                Some((&digest, true)),
             ),
             LmsWhich::VendorMetadataCol => Self::verify_vendor_image_metadata_col(
                 &preamble,
@@ -194,6 +194,97 @@ impl SetAuthManifestCmd {
         match result {
             Ok(()) => Ok(true),
             Err(e) if e == signature_invalid => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Which manifest verifier's ECC leg to exercise on the lab's message.
+#[derive(Clone, Copy)]
+pub(crate) enum EccWhich {
+    /// `verify_vendor_signed_data` (the `ecc384_verify` folders).
+    VendorSignedData,
+    /// `verify_owner_pub_keys`.
+    OwnerPubKeys,
+}
+
+impl SetAuthManifestCmd {
+    /// Runs the ECC leg of `which` on the lab's message: the message is hashed here with the helper the
+    /// functions use (`sha384_digest`), the digest replaces the digest of the fixed preamble range, and the
+    /// key and signature are placed where the function reads them. The PQC leg that follows has no signature,
+    /// so the verdict is the ECC leg's: its ECC-invalid error means rejected, an LMS-leg error or success
+    /// means the ECC signature was accepted, any other error is a failure.
+    #[inline(never)]
+    pub(crate) fn acvp_ecc_leg(
+        drivers: &mut Drivers,
+        which: EccWhich,
+        qx: &[u8; 48],
+        qy: &[u8; 48],
+        r: &[u8; 48],
+        s: &[u8; 48],
+        msg: &[u8],
+    ) -> CaliptraResult<bool> {
+        let digest = Self::sha384_digest(&mut drivers.sha2_512_384, msg, 0, msg.len() as u32)?;
+        let mut preamble = AuthManifestPreamble::default();
+        let mut fw = ImagePreamble::default();
+        let key = ImageEccPubKey {
+            x: words(qx),
+            y: words(qy),
+        };
+        let sig = ImageEccSignature {
+            r: words(r),
+            s: words(s),
+        };
+        let (expected_err, lms_errors) = match which {
+            EccWhich::VendorSignedData => {
+                fw.vendor_ecc_active_pub_key = key;
+                preamble.vendor_pub_keys_signatures.ecc_sig = sig;
+                (
+                    CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_ECC_SIGNATURE_INVALID,
+                    [
+                        CaliptraError::RUNTIME_AUTH_MANIFEST_LMS_VENDOR_PUB_KEY_INVALID,
+                        CaliptraError::RUNTIME_AUTH_MANIFEST_VENDOR_LMS_SIGNATURE_INVALID,
+                    ],
+                )
+            }
+            EccWhich::OwnerPubKeys => {
+                fw.owner_pub_keys.ecc_pub_key = key;
+                preamble.owner_pub_keys_signatures.ecc_sig = sig;
+                (
+                    CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_ECC_SIGNATURE_INVALID,
+                    [
+                        CaliptraError::RUNTIME_AUTH_MANIFEST_LMS_OWNER_PUB_KEY_INVALID,
+                        CaliptraError::RUNTIME_AUTH_MANIFEST_OWNER_LMS_SIGNATURE_INVALID,
+                    ],
+                )
+            }
+        };
+        let result = drivers.abr.with_mldsa87(|mut m| match which {
+            EccWhich::VendorSignedData => Self::verify_vendor_signed_data(
+                &preamble,
+                &fw,
+                &mut drivers.sha2_512_384,
+                &mut drivers.ecc384,
+                &mut drivers.sha256,
+                &mut m,
+                FwVerificationPqcKeyType::LMS,
+                Some((&digest, false)),
+            ),
+            EccWhich::OwnerPubKeys => Self::verify_owner_pub_keys(
+                &preamble,
+                &fw,
+                &mut drivers.sha2_512_384,
+                &mut drivers.ecc384,
+                &mut drivers.sha256,
+                &mut m,
+                FwVerificationPqcKeyType::LMS,
+                Some((&digest, false)),
+            ),
+        });
+        match result {
+            Ok(()) => Ok(true),
+            Err(e) if e == expected_err => Ok(false),
+            Err(e) if lms_errors.contains(&e) => Ok(true),
             Err(e) => Err(e),
         }
     }
