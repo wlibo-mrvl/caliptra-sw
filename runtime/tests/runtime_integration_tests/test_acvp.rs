@@ -773,6 +773,41 @@ fn test_acvp_cm_ecdsa_verify_with_request_key() {
     }
 }
 
+/// The CSR generators signing with the Runtime alias key: an `acvp` build signs the lab's message instead
+/// of the COSE context / CSR TBS. qx || qy come from the persistent data; the signature is the tail of
+/// the structure the production function built.
+#[test]
+fn test_acvp_csr_generators_sign_the_message() {
+    use p384::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+    let mut model = acvp_model();
+    for target in [ACVP_TARGET_ATTESTED_ECC_CSR, ACVP_TARGET_RT_ALIAS_ECC_CSR] {
+        let mut keys = Vec::new();
+        for len in [1usize, 128, 500] {
+            let msg = data(len, 0x2b);
+            let out = ok(acvp_call(&mut model, target, &[&msg]));
+            println!("csr target 0x{target:x} len {len}: blob {} B", out.len() - 96);
+            assert!(out.len() > 96 + 96, "target 0x{target:x}: structure present");
+            let mut sec1 = vec![0x04u8];
+            sec1.extend_from_slice(&out[..96]);
+            let vk = VerifyingKey::from_sec1_bytes(&sec1).expect("the RT alias public key");
+            let blob = &out[96..];
+            let sig = if target == ACVP_TARGET_ATTESTED_ECC_CSR {
+                // COSE_Sign1 = [protected, unprotected, payload, signature]: the signature (r || s) is last.
+                Signature::from_slice(&blob[blob.len() - 96..]).unwrap()
+            } else {
+                // DER CSR: the ECDSA signature (DER SEQUENCE) ends the BIT STRING at the tail.
+                (blob.len().saturating_sub(110)..blob.len())
+                    .find_map(|i| Signature::from_der(&blob[i..]).ok())
+                    .expect("DER signature at the tail of the CSR")
+            };
+            vk.verify_prehash(&Sha384::digest(&msg), &sig)
+                .unwrap_or_else(|_| panic!("target 0x{target:x}: signature over the message, {len} B"));
+            keys.push(out[..96].to_vec());
+        }
+        assert!(keys.windows(2).all(|w| w[0] == w[1]), "the RT alias key does not change");
+    }
+}
+
 #[test]
 fn test_acvp_cm_encrypt_targets() {
     use aes_gcm::aead::{Aead, KeyInit};
@@ -934,6 +969,12 @@ fn test_acvp_replay_framework_requests() {
                     continue;
                 }
                 if obj.contains_key("r") && obj.contains_key("s") {
+                    if name.contains("_csr_") {
+                        // qx || qy || COSE_Sign1 / DER CSR; the grader extracts the signature.
+                        assert!(data.len() > 192, "{name} TC_{tc}: csr structure");
+                        checked += 1;
+                        continue;
+                    }
                     assert_eq!(data.len(), 192, "{name} TC_{tc}: qx qy r s");
                     checked += 1;
                     continue;

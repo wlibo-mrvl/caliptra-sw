@@ -39,7 +39,20 @@ pub fn generate_rt_alias_ecc_csr(
     let key_id_rt_priv_key = Drivers::get_key_id_rt_ecc_priv_key(drivers)?;
     let priv_key_args = KeyReadArgs::new(key_id_rt_priv_key);
     let priv_key = caliptra_drivers::Ecc384PrivKeyIn::Key(priv_key_args);
+    #[cfg(not(feature = "acvp"))]
     let digest = drivers.sha2_512_384.sha384_digest(tbs.tbs());
+    // [ACVP patch] An `acvp` build hashes and signs the lab's message instead of the TBS. The message
+    // arrives in `csr_buf` as [len u32 LE][bytes] (the ACVP_TEST target fills it); the CSR that is
+    // built afterwards is overwritten into the same buffer, as in production.
+    #[cfg(feature = "acvp")]
+    let digest = {
+        let len = u32::from_le_bytes([csr_buf[0], csr_buf[1], csr_buf[2], csr_buf[3]]) as usize;
+        let msg = csr_buf
+            .get(4..)
+            .and_then(|b| b.get(..len))
+            .ok_or(CaliptraError::RUNTIME_MAILBOX_INVALID_PARAMS)?;
+        drivers.sha2_512_384.sha384_digest(msg)
+    };
     let digest = caliptra_drivers::okref(&digest)?;
 
     let signature = drivers

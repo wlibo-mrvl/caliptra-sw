@@ -14,6 +14,8 @@ mod rt_alias;
 use fmc_alias::{generate_fmc_alias_ecc_csr, generate_fmc_alias_mldsa_csr};
 use ldevid::{generate_ldevid_ecc_csr, generate_ldevid_mldsa_csr};
 use rt_alias::{generate_rt_alias_ecc_csr, generate_rt_alias_mldsa_csr};
+#[cfg(feature = "acvp")]
+pub(crate) use rt_alias::generate_rt_alias_ecc_csr as acvp_generate_rt_alias_ecc_csr;
 
 // Maximum size for CSR EAT claims payload (CBOR encoded)
 // Calculation for ML-DSA CSR (worst case, assuming 7680-byte CSR):
@@ -164,9 +166,17 @@ impl DevIdKeyType {
             .map_err(|_| CaliptraError::RUNTIME_ATTESTED_CSR_COSE_SIGN1_ENCODING_ERROR)?;
 
         // Hash the signature context using SHA384
+        #[cfg(not(feature = "acvp"))]
         let signature_slice = &signature_ctx_buffer
             .get(..sign_ctx_len)
             .ok_or(CaliptraError::RUNTIME_ATTESTED_CSR_COSE_SIGN1_ENCODING_ERROR)?;
+        // [ACVP patch] An `acvp` build hashes and signs the payload itself (the lab's message)
+        // instead of the COSE signature context.
+        #[cfg(feature = "acvp")]
+        let signature_slice = {
+            let _ = (&signature_ctx_buffer, sign_ctx_len);
+            payload
+        };
         let digest = drivers.sha2_512_384.sha384_digest(signature_slice);
         let digest = caliptra_drivers::okref(&digest)?;
 

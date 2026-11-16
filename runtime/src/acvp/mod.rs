@@ -22,6 +22,7 @@ use caliptra_error::{CaliptraError, CaliptraResult};
 
 mod aes;
 mod cm;
+mod csr;
 mod ecdsa;
 mod hmac;
 mod kdf;
@@ -164,6 +165,7 @@ fn dispatch(
         }
         ACVP_TARGET_PORT_DERIVE_KEY_PAIR => ports::derive_key_pair(drivers, fields, out),
         ACVP_TARGET_CM_ECDSA_VERIFY => cm::ecdsa_verify(drivers, fields),
+        ACVP_TARGET_ATTESTED_ECC_CSR | ACVP_TARGET_RT_ALIAS_ECC_CSR => csr::sign(drivers, target, fields, out),
         _ => Err(CaliptraError::RUNTIME_UNIMPLEMENTED_COMMAND),
     }
 }

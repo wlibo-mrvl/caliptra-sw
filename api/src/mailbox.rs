@@ -104,6 +104,13 @@ pub const ACVP_TARGET_PORT_DERIVE_KEY_PAIR: u32 = 0x0803;
 /// builds the CM_ECDSA_VERIFY request and calls the real handler (it hashes the message with SHA-384 and
 /// verifies). Result OK = valid, FALSE = invalid.
 pub const ACVP_TARGET_CM_ECDSA_VERIFY: u32 = 0x0804;
+/// CSR generators signing with the Runtime alias key (patched under `acvp` to sign the lab's message
+/// instead of the COSE context / the CSR TBS). Fields: [message]. Response data: qx(48) || qy(48) ||
+/// the structure the production function produced (COSE_Sign1, resp. DER CSR); the signature is its tail
+/// (last 96 bytes r || s, resp. the DER signature of the CSR). The RT alias key is the device's own, so
+/// Runtime must have booted normally.
+pub const ACVP_TARGET_ATTESTED_ECC_CSR: u32 = 0x0810;
+pub const ACVP_TARGET_RT_ALIAS_ECC_CSR: u32 = 0x0811;
 /// Mailbox size in bytes when subsystem mode is enabled.
 pub const SUBSYSTEM_MAILBOX_SIZE_LIMIT: usize = 16 * 1024;
 /// Mailbox size in bytes when passive mode is enabled.
